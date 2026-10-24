@@ -1,0 +1,30 @@
+:root {
+  --color-navy: #172339;
+  --color-navy-hover: #263953;
+  --color-text: #18263a;
+  --color-muted: #5d6c7b;
+  --color-background: #f7f7f2;
+  --color-surface: #ffffff;
+  --color-surface-muted: #eef1f5;
+  --color-border: #dce2e9;
+  --color-accent: #dba84b;
+  --color-accent-light: #f1d28f;
+  --color-success: #26715b;
+  --color-warning: #855b14;
+  --color-danger: #ae3f36;
+  --font-body: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-heading: 'Segoe UI', system-ui, sans-serif;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --radius-sm: 8px;
+  --radius-control: 10px;
+  --radius-card: 16px;
+  --shadow-card: 0 2px 8px rgb(23 35 57 / 3%);
+  --shadow-dialog: 0 24px 80px rgb(23 35 57 / 24%);
+  --focus-ring: 0 0 0 3px rgb(219 168 75 / 35%);
+  /* Responsive ranges used throughout: mobile <=700, tablet <=900, compact desktop <=1200. */
+}

@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    { "collectionGroup": "transactions", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "type", "order": "ASCENDING" },
+      { "fieldPath": "date", "order": "ASCENDING" }
+    ] },
+    { "collectionGroup": "plannedExpenses", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "dueDate", "order": "ASCENDING" }
+    ] }
+  ],
+  "fieldOverrides": []
+}

@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(uid) { return request.auth != null && request.auth.uid == uid; }
+    function safeAmount(v) { return v is int && v > 0 && v <= 9007199254740991; }
+    function safeLimit(v) { return v is int && v >= 0 && v <= 9007199254740991; }
+    function currency(data) { return !('currency' in data) || data.currency == 'INR'; }
+    function leapYear(y) { return y % 400 == 0 || (y % 4 == 0 && y % 100 != 0); }
+    function calendarDate(v) {
+      return v is string && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$')
+        && !v.matches('^0000-.*$') && !v.matches('^[0-9]{4}-(04|06|09|11)-31$')
+        && !v.matches('^[0-9]{4}-02-(30|31)$')
+        && (!v.matches('^[0-9]{4}-02-29$') || leapYear(int(v.split('-')[0])));
+    }
+    function monthKey(v) { return v is string && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])$') && !v.matches('^0000-.*$'); }
+    function recordId(v) { return v is string && v.matches('^[A-Za-z0-9_-]{1,100}$'); }
+    function title(v) { return v is string && v.size() > 0 && v.size() <= 80; }
+    function createdTime(v) { return (v is timestamp && v <= request.time) || (v is int && v >= 0 && v <= 9007199254740991); }
+    function stamped(data) { return data.updatedAt == request.time; }
+    function expenseCategory(v) { return v in ['Food', 'Travel', 'Shopping', 'Bills', 'Education', 'Health', 'Entertainment', 'Other']; }
+    function incomeCategory(v) { return v in ['Allowance', 'Scholarship', 'Salary', 'Other']; }
+    function validTransaction(data) {
+      return data.keys().hasAll(['type', 'amountPaise', 'category', 'date', 'note', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['type', 'amountPaise', 'category', 'date', 'note', 'createdAt', 'updatedAt', 'currency', 'plannedExpenseId'])
+        && data.type in ['expense', 'income', 'refund'] && safeAmount(data.amountPaise)
+        && data.category is string && ((data.type == 'income' && incomeCategory(data.category)) || (data.type != 'income' && expenseCategory(data.category)))
+        && calendarDate(data.date) && data.note is string && data.note.size() <= 500
+        && currency(data) && createdTime(data.createdAt) && stamped(data);
+    }
+    function transactionLink(data, uid, id) {
+      return !('plannedExpenseId' in data) || (recordId(data.plannedExpenseId) && data.type == 'expense'
+        && getAfter(/databases/$(database)/documents/users/$(uid)/plannedExpenses/$(data.plannedExpenseId)).data.status == 'paid'
+        && getAfter(/databases/$(database)/documents/users/$(uid)/plannedExpenses/$(data.plannedExpenseId)).data.transactionId == id
+        && getAfter(/databases/$(database)/documents/users/$(uid)/plannedExpenses/$(data.plannedExpenseId)).data.amountPaise == data.amountPaise
+        && getAfter(/databases/$(database)/documents/users/$(uid)/plannedExpenses/$(data.plannedExpenseId)).data.category == data.category);
+    }
+    function transactionUnlinkedAfter(data, uid) {
+      return !('plannedExpenseId' in data) || !existsAfter(/databases/$(database)/documents/users/$(uid)/plannedExpenses/$(data.plannedExpenseId))
+        || getAfter(/databases/$(database)/documents/users/$(uid)/plannedExpenses/$(data.plannedExpenseId)).data.status == 'planned';
+    }
+    function categoryLimit(limits, category) { return !(category in limits) || safeLimit(limits[category]); }
+    function validCategoryLimits(v) {
+      return v is map && v.keys().hasOnly(['Food', 'Travel', 'Shopping', 'Bills', 'Education', 'Health', 'Entertainment', 'Other'])
+        && categoryLimit(v, 'Food') && categoryLimit(v, 'Travel') && categoryLimit(v, 'Shopping') && categoryLimit(v, 'Bills')
+        && categoryLimit(v, 'Education') && categoryLimit(v, 'Health') && categoryLimit(v, 'Entertainment') && categoryLimit(v, 'Other');
+    }
+    function validBudget(data, id) {
+      return data.keys().hasAll(['monthKey', 'limitPaise', 'categoryLimits', 'updatedAt'])
+        && data.keys().hasOnly(['monthKey', 'limitPaise', 'categoryLimits', 'updatedAt', 'currency'])
+        && data.monthKey == id && monthKey(id) && safeLimit(data.limitPaise) && validCategoryLimits(data.categoryLimits)
+        && currency(data) && stamped(data);
+    }
+    function validExpectedIncome(v) {
+      return v is map && v.keys().hasOnly(['Allowance', 'Scholarship', 'Salary', 'Other'])
+        && categoryLimit(v, 'Allowance') && categoryLimit(v, 'Scholarship') && categoryLimit(v, 'Salary') && categoryLimit(v, 'Other');
+    }
+    function validPlanning(data, id) {
+      return data.keys().hasAll(['monthKey', 'currency', 'expectedIncome', 'essentialCategories', 'updatedAt'])
+        && data.keys().hasOnly(['monthKey', 'currency', 'expectedIncome', 'essentialCategories', 'updatedAt'])
+        && monthKey(id) && data.monthKey == id && data.currency == 'INR' && validExpectedIncome(data.expectedIncome)
+        && data.essentialCategories is list && data.essentialCategories.size() <= 8
+        && data.essentialCategories.toSet().size() == data.essentialCategories.size()
+        && data.essentialCategories.hasOnly(['Food', 'Travel', 'Shopping', 'Bills', 'Education', 'Health', 'Entertainment', 'Other'])
+        && stamped(data);
+    }
+    function validPlannedExpense(data) {
+      return data.keys().hasAll(['title', 'amountPaise', 'category', 'dueDate', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'amountPaise', 'category', 'dueDate', 'status', 'createdAt', 'updatedAt', 'currency', 'transactionId'])
+        && title(data.title) && safeAmount(data.amountPaise) && expenseCategory(data.category) && calendarDate(data.dueDate)
+        && data.status in ['planned', 'paid'] && currency(data) && createdTime(data.createdAt) && stamped(data)
+        && ((data.status == 'planned' && !('transactionId' in data)) || (data.status == 'paid' && recordId(data.transactionId)));
+    }
+    function plannedLink(data, uid, id) {
+      return data.status == 'planned' || (getAfter(/databases/$(database)/documents/users/$(uid)/transactions/$(data.transactionId)).data.type == 'expense'
+        && getAfter(/databases/$(database)/documents/users/$(uid)/transactions/$(data.transactionId)).data.plannedExpenseId == id
+        && getAfter(/databases/$(database)/documents/users/$(uid)/transactions/$(data.transactionId)).data.amountPaise == data.amountPaise
+        && getAfter(/databases/$(database)/documents/users/$(uid)/transactions/$(data.transactionId)).data.category == data.category);
+    }
+    function plannedReopened(data, old, uid) {
+      return old.status != 'paid' || data.status == 'paid' || !existsAfter(/databases/$(database)/documents/users/$(uid)/transactions/$(old.transactionId));
+    }
+    function validGoal(data) {
+      return data.keys().hasAll(['title', 'targetPaise', 'reservedPaise', 'targetDate', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'targetPaise', 'reservedPaise', 'targetDate', 'createdAt', 'updatedAt', 'currency'])
+        && title(data.title) && safeAmount(data.targetPaise) && safeLimit(data.reservedPaise) && data.reservedPaise <= data.targetPaise
+        && calendarDate(data.targetDate) && currency(data) && createdTime(data.createdAt) && stamped(data);
+    }
+    match /users/{uid}/transactions/{id} {
+      allow read: if owns(uid);
+      allow create: if owns(uid) && validTransaction(request.resource.data) && request.resource.data.createdAt == request.time
+        && transactionLink(request.resource.data, uid, id);
+      allow update: if owns(uid) && validTransaction(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt
+        && transactionLink(request.resource.data, uid, id)
+        && (!('plannedExpenseId' in resource.data) || ('plannedExpenseId' in request.resource.data && request.resource.data.plannedExpenseId == resource.data.plannedExpenseId)
+          || !existsAfter(/databases/$(database)/documents/users/$(uid)/plannedExpenses/$(resource.data.plannedExpenseId)));
+      allow delete: if owns(uid) && transactionUnlinkedAfter(resource.data, uid);
+    }
+    match /users/{uid}/budgets/{id} {
+      allow read, delete: if owns(uid);
+      allow create, update: if owns(uid) && validBudget(request.resource.data, id);
+    }
+    match /users/{uid}/planning/{id} {
+      allow read, delete: if owns(uid);
+      allow create, update: if owns(uid) && validPlanning(request.resource.data, id);
+    }
+    match /users/{uid}/plannedExpenses/{id} {
+      allow read: if owns(uid);
+      allow create: if owns(uid) && validPlannedExpense(request.resource.data) && request.resource.data.createdAt == request.time && plannedLink(request.resource.data, uid, id);
+      allow update: if owns(uid) && validPlannedExpense(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt
+        && plannedLink(request.resource.data, uid, id) && plannedReopened(request.resource.data, resource.data, uid);
+      allow delete: if owns(uid) && (resource.data.status != 'paid' || !existsAfter(/databases/$(database)/documents/users/$(uid)/transactions/$(resource.data.transactionId))
+        || !('plannedExpenseId' in getAfter(/databases/$(database)/documents/users/$(uid)/transactions/$(resource.data.transactionId)).data));
+    }
+    match /users/{uid}/goals/{id} {
+      allow read, delete: if owns(uid);
+      allow create: if owns(uid) && validGoal(request.resource.data) && request.resource.data.createdAt == request.time;
+      allow update: if owns(uid) && validGoal(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
