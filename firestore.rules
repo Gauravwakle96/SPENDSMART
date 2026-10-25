@@ -19,13 +19,31 @@ service cloud.firestore {
     function stamped(data) { return data.updatedAt == request.time; }
     function expenseCategory(v) { return v in ['Food', 'Travel', 'Shopping', 'Bills', 'Education', 'Health', 'Entertainment', 'Other']; }
     function incomeCategory(v) { return v in ['Allowance', 'Scholarship', 'Salary', 'Other']; }
+    function classification(v) { return v in ['expense', 'income', 'refund', 'internal_transfer', 'credit_card_payment', 'loan_disbursement', 'loan_repayment', 'investment', 'cash_withdrawal', 'fee', 'unknown']; }
+    function validImportMetadata(data) {
+      return (!('importId' in data) && !('accountKey' in data) && !('sourceFileHash' in data)
+        && !('sourceRowNumber' in data) && !('sourceFingerprint' in data) && !('importOriginalHash' in data))
+        || (recordId(data.importId) && data.accountKey is string && data.accountKey.matches('^acct_[a-f0-9]{16}$')
+          && data.sourceFileHash is string && data.sourceFileHash.matches('^[a-f0-9]{64}$')
+          && data.sourceRowNumber is int && data.sourceRowNumber > 0 && data.sourceRowNumber <= 1000000
+          && data.sourceFingerprint is string && data.sourceFingerprint.matches('^[a-f0-9]{16}$')
+          && data.importOriginalHash is string && data.importOriginalHash.matches('^[a-f0-9]{16}$')
+          && classification(data.classification) && data.excludedFromAnalysis is bool);
+    }
     function validTransaction(data) {
       return data.keys().hasAll(['type', 'amountPaise', 'category', 'date', 'note', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['type', 'amountPaise', 'category', 'date', 'note', 'createdAt', 'updatedAt', 'currency', 'plannedExpenseId'])
+        && data.keys().hasOnly(['type', 'amountPaise', 'category', 'date', 'note', 'createdAt', 'updatedAt', 'currency', 'plannedExpenseId',
+          'classification', 'excludedFromAnalysis', 'importId', 'accountLabel', 'accountKey', 'sourceTransactionId', 'sourceFileHash',
+          'sourceRowNumber', 'sourceFingerprint', 'importOriginalHash', 'merchant'])
         && data.type in ['expense', 'income', 'refund'] && safeAmount(data.amountPaise)
         && data.category is string && ((data.type == 'income' && incomeCategory(data.category)) || (data.type != 'income' && expenseCategory(data.category)))
         && calendarDate(data.date) && data.note is string && data.note.size() <= 500
-        && currency(data) && createdTime(data.createdAt) && stamped(data);
+        && (!('classification' in data) || classification(data.classification))
+        && (!('excludedFromAnalysis' in data) || data.excludedFromAnalysis is bool)
+        && (!('accountLabel' in data) || (data.accountLabel is string && data.accountLabel.size() <= 80))
+        && (!('sourceTransactionId' in data) || (data.sourceTransactionId is string && data.sourceTransactionId.size() <= 128))
+        && (!('merchant' in data) || (data.merchant is string && data.merchant.size() <= 100))
+        && validImportMetadata(data) && currency(data) && createdTime(data.createdAt) && stamped(data);
     }
     function transactionLink(data, uid, id) {
       return !('plannedExpenseId' in data) || (recordId(data.plannedExpenseId) && data.type == 'expense'
@@ -85,6 +103,33 @@ service cloud.firestore {
         && title(data.title) && safeAmount(data.targetPaise) && safeLimit(data.reservedPaise) && data.reservedPaise <= data.targetPaise
         && calendarDate(data.targetDate) && currency(data) && createdTime(data.createdAt) && stamped(data);
     }
+    function validImportRecord(data) {
+      return data.keys().hasAll(['filenames', 'fileHashes', 'accountLabels', 'processedCount', 'importedCount', 'skippedCount',
+          'flaggedCount', 'invalidCount', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['filenames', 'fileHashes', 'accountLabels', 'processedCount', 'importedCount', 'skippedCount',
+          'flaggedCount', 'invalidCount', 'status', 'createdAt', 'updatedAt', 'startDate', 'endDate'])
+        && data.filenames is list && data.filenames.size() > 0 && data.filenames.size() <= 12
+        && data.fileHashes is list && data.fileHashes.size() == data.filenames.size()
+        && data.accountLabels is list && data.accountLabels.size() <= 12
+        && data.processedCount is int && data.processedCount >= 0 && data.processedCount <= 5000
+        && data.importedCount is int && data.importedCount >= 0 && data.importedCount <= 5000
+        && data.skippedCount is int && data.skippedCount >= 0 && data.skippedCount <= 5000
+        && data.importedCount + data.skippedCount == data.processedCount
+        && data.flaggedCount is int && data.flaggedCount >= 0 && data.flaggedCount <= data.processedCount
+        && data.invalidCount is int && data.invalidCount >= 0 && data.invalidCount <= data.processedCount
+        && data.status in ['processing', 'completed', 'partial', 'failed', 'rolled_back', 'partial_rollback']
+        && createdTime(data.createdAt) && stamped(data)
+        && ((!('startDate' in data) && !('endDate' in data))
+          || (calendarDate(data.startDate) && calendarDate(data.endDate) && data.startDate <= data.endDate));
+    }
+    function validCategoryRule(data) {
+      return data.keys().hasAll(['matchText', 'direction', 'category', 'classification', 'excludedFromAnalysis', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['matchText', 'direction', 'category', 'classification', 'excludedFromAnalysis', 'createdAt', 'updatedAt'])
+        && data.matchText is string && data.matchText.size() >= 3 && data.matchText.size() <= 100
+        && data.direction in ['debit', 'credit', 'any']
+        && (expenseCategory(data.category) || incomeCategory(data.category)) && classification(data.classification)
+        && data.excludedFromAnalysis is bool && createdTime(data.createdAt) && stamped(data);
+    }
     match /users/{uid}/transactions/{id} {
       allow read: if owns(uid);
       allow create: if owns(uid) && validTransaction(request.resource.data) && request.resource.data.createdAt == request.time
@@ -115,6 +160,23 @@ service cloud.firestore {
       allow read, delete: if owns(uid);
       allow create: if owns(uid) && validGoal(request.resource.data) && request.resource.data.createdAt == request.time;
       allow update: if owns(uid) && validGoal(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt;
+    }
+    match /users/{uid}/imports/{id} {
+      allow read: if owns(uid);
+      allow create: if owns(uid) && recordId(id) && validImportRecord(request.resource.data) && request.resource.data.createdAt == request.time;
+      allow update: if owns(uid) && recordId(id) && validImportRecord(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.filenames == resource.data.filenames && request.resource.data.fileHashes == resource.data.fileHashes
+        && request.resource.data.accountLabels == resource.data.accountLabels && request.resource.data.processedCount == resource.data.processedCount
+        && request.resource.data.importedCount == resource.data.importedCount && request.resource.data.skippedCount == resource.data.skippedCount
+        && request.resource.data.flaggedCount == resource.data.flaggedCount && request.resource.data.invalidCount == resource.data.invalidCount
+        && request.resource.data.get('startDate', null) == resource.data.get('startDate', null)
+        && request.resource.data.get('endDate', null) == resource.data.get('endDate', null);
+      allow delete: if false;
+    }
+    match /users/{uid}/categoryRules/{id} {
+      allow read, delete: if owns(uid);
+      allow create: if owns(uid) && recordId(id) && validCategoryRule(request.resource.data) && request.resource.data.createdAt == request.time;
+      allow update: if owns(uid) && recordId(id) && validCategoryRule(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt;
     }
     match /{document=**} { allow read, write: if false; }
   }

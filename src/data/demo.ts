@@ -1,7 +1,8 @@
 import { todayISO, validateBudget, validateTransaction } from '../domain/engine';
 import type { Budget, Transaction } from '../domain/types';
 import type { PlannedExpense, SavingsGoal, StudentPlan } from '../domain/planning-types';
-import { validatePlannedExpense, validateSavingsGoal, validateStudentPlan, validRecordId } from './validation';
+import type { CategoryRule, ImportRecord } from '../domain/import-types';
+import { validateCategoryRule, validateImportRecord, validatePlannedExpense, validateSavingsGoal, validateStudentPlan, validRecordId } from './validation';
 
 export const DEMO_DATA_KEY = 'spendsmart.demo.data.v1';
 export const DEMO_SESSION_KEY = 'spendsmart.demo.session.v1';
@@ -12,6 +13,8 @@ export interface DemoData {
   planning: StudentPlan[];
   plannedExpenses: PlannedExpense[];
   goals: SavingsGoal[];
+  imports: ImportRecord[];
+  categoryRules: CategoryRule[];
 }
 
 export interface RecoveredDemoData extends DemoData {
@@ -41,7 +44,19 @@ export function readTransaction(id: string, value: unknown, asOf = todayISO()): 
   if (value.currency !== undefined && value.currency !== 'INR') return null;
   if (typeof type !== 'string' || typeof amountPaise !== 'number' || typeof category !== 'string'
     || typeof date !== 'string' || typeof note !== 'string') return null;
-  const transaction = { id, type, amountPaise, category, date, note, createdAt } as Transaction;
+  const transaction = { id, type, amountPaise, category, date, note, createdAt,
+    ...(value.classification !== undefined ? { classification: value.classification } : {}),
+    ...(value.excludedFromAnalysis !== undefined ? { excludedFromAnalysis: value.excludedFromAnalysis } : {}),
+    ...(value.importId !== undefined ? { importId: value.importId } : {}),
+    ...(value.accountLabel !== undefined ? { accountLabel: value.accountLabel } : {}),
+    ...(value.accountKey !== undefined ? { accountKey: value.accountKey } : {}),
+    ...(value.sourceTransactionId !== undefined ? { sourceTransactionId: value.sourceTransactionId } : {}),
+    ...(value.sourceFileHash !== undefined ? { sourceFileHash: value.sourceFileHash } : {}),
+    ...(value.sourceRowNumber !== undefined ? { sourceRowNumber: value.sourceRowNumber } : {}),
+    ...(value.sourceFingerprint !== undefined ? { sourceFingerprint: value.sourceFingerprint } : {}),
+    ...(value.importOriginalHash !== undefined ? { importOriginalHash: value.importOriginalHash } : {}),
+    ...(value.merchant !== undefined ? { merchant: value.merchant } : {}),
+  } as Transaction;
   try {
     validateTransaction(transaction, asOf);
     return transaction;
@@ -86,16 +101,41 @@ export function readSavingsGoal(id: string, value: unknown): SavingsGoal | null 
   try { validateSavingsGoal(goal); return goal; } catch { return null; }
 }
 
+export function readImportRecord(id: string, value: unknown): ImportRecord | null {
+  if (!object(value) || !validRecordId(id)) return null;
+  const createdAt = readCreatedAt(value.createdAt);
+  const updatedAt = value.updatedAt === undefined ? undefined : readCreatedAt(value.updatedAt);
+  if (createdAt === null || (value.updatedAt !== undefined && updatedAt === null)) return null;
+  const record = { id, createdAt, ...(updatedAt !== undefined ? { updatedAt } : {}), filenames: value.filenames,
+    fileHashes: value.fileHashes, accountLabels: value.accountLabels, processedCount: value.processedCount,
+    importedCount: value.importedCount, skippedCount: value.skippedCount, flaggedCount: value.flaggedCount,
+    invalidCount: value.invalidCount, status: value.status,
+    ...(value.startDate !== undefined ? { startDate: value.startDate } : {}),
+    ...(value.endDate !== undefined ? { endDate: value.endDate } : {}) } as ImportRecord;
+  try { validateImportRecord(record); return record; } catch { return null; }
+}
+
+export function readCategoryRule(id: string, value: unknown): CategoryRule | null {
+  if (!object(value) || !validRecordId(id)) return null;
+  const createdAt = readCreatedAt(value.createdAt);
+  if (createdAt === null) return null;
+  const rule = { id, matchText: value.matchText, direction: value.direction, category: value.category,
+    classification: value.classification, excludedFromAnalysis: value.excludedFromAnalysis, createdAt } as CategoryRule;
+  try { validateCategoryRule(rule); return rule; } catch { return null; }
+}
+
 export function recoverDemoData(raw: string, asOf = todayISO()): RecoveredDemoData {
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!object(parsed) || (parsed.version !== 1 && parsed.version !== 2) || !Array.isArray(parsed.transactions)
+    if (!object(parsed) || (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3) || !Array.isArray(parsed.transactions)
       || !Array.isArray(parsed.budgets)) throw new Error('Invalid local data');
     const transactions = new Map<string, Transaction>();
     const budgets = new Map<string, Budget>();
     const planning = new Map<string, StudentPlan>();
     const plannedExpenses = new Map<string, PlannedExpense>();
     const goals = new Map<string, SavingsGoal>();
+    const imports = new Map<string, ImportRecord>();
+    const categoryRules = new Map<string, CategoryRule>();
     let rejected = 0;
     for (const value of parsed.transactions) {
       const record = object(value) && typeof value.id === 'string'
@@ -109,7 +149,7 @@ export function recoverDemoData(raw: string, asOf = todayISO()): RecoveredDemoDa
       if (record && !budgets.has(record.monthKey)) budgets.set(record.monthKey, record);
       else rejected++;
     }
-    if (parsed.version === 2) {
+    if (parsed.version === 2 || parsed.version === 3) {
       if (!Array.isArray(parsed.planning) || !Array.isArray(parsed.plannedExpenses) || !Array.isArray(parsed.goals)) throw new Error('Invalid planning data');
       for (const value of parsed.planning) {
         const record = object(value) && typeof value.monthKey === 'string' ? readStudentPlan(value.monthKey, value) : null;
@@ -132,12 +172,25 @@ export function recoverDemoData(raw: string, asOf = todayISO()): RecoveredDemoDa
         if (record && !goals.has(record.id)) goals.set(record.id, record); else rejected++;
       }
     }
+    if (parsed.version === 3) {
+      if (!Array.isArray(parsed.imports) || !Array.isArray(parsed.categoryRules)) throw new Error('Invalid import data');
+      for (const value of parsed.imports) {
+        const record = object(value) && typeof value.id === 'string' ? readImportRecord(value.id, value) : null;
+        if (record && !imports.has(record.id)) imports.set(record.id, record); else rejected++;
+      }
+      for (const value of parsed.categoryRules) {
+        const record = object(value) && typeof value.id === 'string' ? readCategoryRule(value.id, value) : null;
+        if (record && !categoryRules.has(record.id)) categoryRules.set(record.id, record); else rejected++;
+      }
+    }
     return {
       transactions: [...transactions.values()],
       budgets: [...budgets.values()],
       planning: [...planning.values()],
       plannedExpenses: [...plannedExpenses.values()],
       goals: [...goals.values()],
+      imports: [...imports.values()],
+      categoryRules: [...categoryRules.values()],
       warning: rejected ? `${rejected} invalid saved demo record${rejected === 1 ? ' was' : 's were'} skipped. Valid records were recovered.` : null,
     };
   } catch {
@@ -147,13 +200,16 @@ export function recoverDemoData(raw: string, asOf = todayISO()): RecoveredDemoDa
       planning: [],
       plannedExpenses: [],
       goals: [],
+      imports: [],
+      categoryRules: [],
       warning: 'Saved demo data could not be read. You can continue with an empty ledger; the next save will replace the unreadable demo data.',
     };
   }
 }
 
 export function serializeDemoData(data: DemoData): string {
-  return JSON.stringify({ version: 2, transactions: data.transactions, budgets: data.budgets, planning: data.planning, plannedExpenses: data.plannedExpenses, goals: data.goals });
+  return JSON.stringify({ version: 3, transactions: data.transactions, budgets: data.budgets, planning: data.planning,
+    plannedExpenses: data.plannedExpenses, goals: data.goals, imports: data.imports, categoryRules: data.categoryRules });
 }
 
 export function createDemoData(asOf = todayISO()): DemoData {
@@ -219,5 +275,5 @@ export function createDemoData(asOf = todayISO()): DemoData {
     { id: 'demo-upcoming-bus', title: 'Bus pass renewal', amountPaise: 18000, category: 'Travel', dueDate, status: 'planned', createdAt: createdAt + 1 },
   ];
   const goals: SavingsGoal[] = [{ id: 'demo-goal-laptop', title: 'Laptop fund', targetPaise: 4000000, reservedPaise: 800000, targetDate, createdAt }];
-  return { transactions, budgets, planning, plannedExpenses, goals };
+  return { transactions, budgets, planning, plannedExpenses, goals, imports: [], categoryRules: [] };
 }

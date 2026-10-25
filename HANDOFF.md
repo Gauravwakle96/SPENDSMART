@@ -1,114 +1,145 @@
-# SpendSmart implementation handoff
+# SpendSmart financial intelligence upgrade handoff
 
-## Status
+## Delivery status
 
-The existing project has been extended in place. The local demo and built production UI are interactive and tested. **No production Firebase project or public deployment has been configured or verified.**
+SpendSmart was enhanced in place on branch `feature/bank-statement-intelligence`. The existing React, Vite, TypeScript, Firebase Authentication, Cloud Firestore and Recharts architecture remains intact. Existing transactions, refunds, budgets, planning, savings, simulations, reports, authentication and local demo behavior were preserved.
 
-The [README](README.md) contains exact local setup, Firebase environment variables, formulas, data semantics and deployment commands.
+No production deployment was performed. The implementation is committed on this feature branch; use `git log -1 --oneline` for the resulting commit hash. The branch started from commit `66e719c` (`Build SpendSmart explainable student budget intelligence`).
 
-## Audit findings and resulting changes
+## Implemented features
 
-The initial audit found a useful working foundation: integer money parsing, CRUD, refund handling, local persistence, authentication adapter, ownership rules and CSV export. It also found four failing browser tests caused by frozen browser timers, circular build chunk warnings, limited transaction browsing, unclear cash-versus-budget guidance and missing student planning workflows.
+- Added **Import & Analyze** to the existing application navigation.
+- Added local browser parsing for multiple CSV and XLSX statements. Limits are 12 files, 10 MB per file and 5,000 rows per import session.
+- Added automatic header detection plus manual column mapping for dates, descriptions, debit/credit or signed amounts, balances, bank references and account labels.
+- Added exact integer-paise normalization, common Indian date formats, Excel serial dates and validation that keeps invalid rows visible.
+- Added a review table with editable transaction type, category, movement classification and analysis inclusion, plus confidence, validation and duplicate status.
+- Added deterministic transaction IDs and retry-safe cloud writes. Transactions are persisted only after explicit confirmation.
+- Added exact duplicate signals for stable bank references and repeated source-file rows. Matching date/description/amount/direction/account is treated only as a probable duplicate and remains user-reviewable.
+- Added masked account labels, account grouping, import reconciliation history and conflict-aware rollback. Rollback deletes only unchanged transactions owned by that import; edited or linked records remain as reported conflicts.
+- Added reusable, user-scoped categorization rules layered over conservative merchant and keyword matching. No external AI service is required.
+- Added classifications for expenses, income, refunds, transfers, credit-card payments, loans, investments, cash withdrawals, fees and unknown movements without replacing the established `income | expense | refund` transaction model.
+- Added an `excludedFromAnalysis` safeguard. Transfers, card payments, investments, loan movements, withdrawals and unknown rows default outside financial totals until reviewed.
+- Added Financial Year Review for Indian April-March years, calendar years, custom ranges and individual months.
+- Added period-derived income, gross expenses, refunds, signed net expenses, cash flow, category, merchant, account, monthly trends, largest transactions, prior-period comparison and coverage warnings.
+- Added cautious recurring-payment pattern detection, explainable spending anomalies, deterministic narrative summaries and editable category-budget recommendations based on observed history.
+- Added period CSV, import reconciliation CSV and lazy-loaded multi-page PDF reports. CSV exports neutralize spreadsheet-formula prefixes.
+- Added a deterministic fictional statement demo that uses the production parser, categorization, duplicate review, import, analysis and export workflow.
+- Extended Firestore schemas and owner-scoped rules for import metadata, transaction import fields, `imports` and `categoryRules`.
+- Added tests for parsers, mapping, normalization, duplicate handling, financial-year calculations, recurring/anomaly logic, budget recommendations, local import workflows, cloud persistence and rules.
 
-Working behavior was preserved. The implementation added or corrected:
-
-1. A pure financial intelligence layer with inclusive-today allowance, cash/commitment/category constraints, forecast readiness, transparent health rules and signed refund reconciliation.
-2. Duplicate-resistant transaction IDs, failed-write recovery, non-resurrecting edits, session-scoped asynchronous results, server timestamps, selected-month queries and independent balance/history aggregates.
-3. A navy, warm-neutral and amber design system, responsive dashboard hierarchy, meaningful charts, text alternatives, stronger contrast and keyboard-accessible dialogs/tabs.
-4. Search, date/type/category filters, sorting, pagination, CSV export, recent budget history and optional onboarding.
-5. Expected income by source, essential/discretionary classification, planned expenses with atomic payment links, cash-backed savings goals and nonpersistent simulations.
-6. A separate deterministic local demo, confirmed reset, storage recovery/migration and an in-app judge guide.
-7. Expanded financial, data, browser, accessibility, authentication and Firestore-rule verification. The clock harness now fixes the date without freezing browser timers.
-8. Explicit session-token checks before cloud refreshes/writes, with private-workspace clearing when token renewal is rejected.
-
-The original audit and prioritized plan remain in [hackathon-audit.md](hackathon-audit.md) and [hackathon-plan.md](hackathon-plan.md).
+PDF bank-statement parsing was deliberately not added. Text/scanned PDF extraction was not reliable enough to satisfy the requirement against silently incorrect financial records. PDF report generation is implemented separately from statement parsing.
 
 ## Architecture and important files
 
-The stack remains React 19, Vite 7, TypeScript, Firebase Authentication, Cloud Firestore and Recharts, with Vercel build configuration.
-
-- UI: `src/App.tsx`, `src/components/Transactions.tsx`, `Planning.tsx`, `Insights.tsx`.
-- Reusable calculations: `src/domain/engine.ts`, `intelligence.ts`, `types.ts`, `planning-types.ts`.
-- Persistence: `src/data/SpendSmartProvider.tsx`, `store.ts`, `cloud.ts`, `demo.ts`, `validation.ts`, `firebase.ts`.
-- Visual system: `src/tokens.css`, `styles.css`, `workflows.css`, `src/components/insights.css`.
-- Security/configuration: `firestore.rules`, `firestore.indexes.json`, `firebase.json`, `vercel.json`, `.env.example`.
-- Verification: domain/data tests, `tests/app.spec.ts`, `planning.spec.ts`, `accessibility.spec.ts`, `tests/auth/cloud.spec.ts`, `scripts/test-firestore-rules.mjs`, and Playwright/Vitest configs.
-- Handoff: `README.md`, this file and the audit/plan documents.
-
-There is no custom backend server. Firebase services and rules form the backend boundary. Local demo records and cloud records use separate persistence paths.
-
-## Executed verification
-
-These results come from executed checks during this implementation. Emulator results verify the local Firebase boundary; they do not certify a production project.
-
-| Check | Executed result |
+| Area | Files |
 | --- | --- |
-| Unit tests | 97 passed; 6 cloud cases intentionally skipped outside emulators and run separately |
-| TypeScript | Passed |
-| ESLint | Passed |
-| Development browser workflows | 11 passed |
-| Production browser workflows | 11 passed after final session-recovery refinement |
-| Accessibility | Axe WCAG A/AA scan passed on login, six pages, transaction dialog and mobile savings; keyboard dismissal/focus and planning tabs passed |
-| Firestore rules emulator | 17 grouped tests passed |
-| Auth + Firestore integration | 6 passed, including expired/rejected token refresh clearing private records |
-| Auth browser tests | 3 passed after final session-recovery refinement |
-| Production build | Passed after session-recovery fixes |
-| Production dependency audit | 0 vulnerabilities reported by `npm audit --omit=dev --json` |
-| Browser console/network | No JavaScript errors, console errors or failed requests during production navigation |
-| Responsive layouts | Six pages checked at widths 1440, 1024, 768, 390 and 320; no horizontal document overflow |
+| Navigation and feature integration | `src/App.tsx`, `src/components/Insights.tsx` |
+| Import UI | `src/components/ImportAnalyze.tsx`, `src/components/import-analyze.css` |
+| Financial-year UI | `src/components/FinancialYearReview.tsx`, `src/components/financial-intelligence.css` |
+| Parsing and sample data | `src/data/statement-files.ts`, `src/data/demo-statement.ts` |
+| Import domain logic | `src/domain/import-types.ts`, `src/domain/import-engine.ts` |
+| Financial analysis | `src/domain/financial-analysis.ts` |
+| Report generation | `src/data/report-export.ts` |
+| Persistence and validation | `src/data/store.ts`, `src/data/cloud.ts`, `src/data/demo.ts`, `src/data/SpendSmartProvider.tsx`, `src/data/validation.ts` |
+| Existing financial integration | `src/domain/types.ts`, `src/domain/engine.ts`, `src/domain/intelligence.ts` |
+| Security boundary | `firestore.rules`, `scripts/test-firestore-rules.mjs` |
+| Documentation | `README.md`, this file |
 
-The production bundle still emits Vite's size warning for the Firebase chunk (approximately 553 KB minified, 166 KB gzip). The circular chunk warnings were fixed. This is not a measured performance benchmark.
+Core import, classification and analysis calculations are pure TypeScript modules rather than component-local business logic. Confirmed imported records use the existing transaction store and therefore flow through the established dashboard, budget and reporting calculations.
 
-Coverage includes no records/budget, zero income/budget, exact exhaustion, 80% warnings, exceeded budgets, equal/above-budget forecasts, first/final days, month lengths/leap years, date boundaries, future dates, refunds, multiple income sources, invalid amounts/categories, edit/delete effects, duplicate submits, failed writes, account isolation, empty charts, planning payment lifecycle and pure simulations.
+## Dependencies added
 
-Axe and Chromium checks are not a complete manual screen-reader or cross-browser certification. Password recovery uses the real local emulator outbox; production email delivery is unverified.
+- `read-excel-file`: browser-compatible XLSX extraction without uploading the original statement.
+- `jspdf`: browser-side PDF report creation from calculated data.
+- `jspdf-autotable`: multi-page report tables. Both PDF packages are dynamically imported only when requested.
 
-## Security verification and limits
+No UI framework, custom backend, Azure/OpenAI SDK or paid AI dependency was added.
 
-The Firestore emulator proved anonymous and cross-user denial for read/list/create/update/delete operations, field/type/calendar validation, immutable creation timestamps and atomic reciprocal payment links. Cloud tests verified two-account data clearing, exact older-history cash aggregates, idempotency, reset-password behavior and failed-listener recovery.
+## Verification executed
 
-Rules must still be deployed to the actual project. Deployed authorized domains, indexes, authentication settings, password email delivery and production isolation must then be verified. No real credentials were added.
+The following results were actually obtained on this branch before final handoff:
 
-Local demo storage is unencrypted and openly labeled. No real financial information should be entered in a demo on a shared device. Missing or unconfirmed cloud totals are unavailable rather than displayed as zero.
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm test` | 122 passed; 7 emulator-only tests skipped by the normal unit configuration |
+| `npm run build` | Passed |
+| `npm run test:e2e` | 12 passed |
+| `npm run test:preview` | 12 passed against the built `dist` output |
+| `npx playwright test tests/accessibility.spec.ts` | Passed after adding labels to preview file/account controls |
+| `npm audit --omit=dev --json` | 0 production dependency vulnerabilities reported |
+| `npm run test:rules` | Could not start: Firebase CLI 15.34.1 requires Java 21+, but Java 8 is installed |
 
-## Repeatable judge demonstration
+The browser suite includes the fictional 87-row CSV workflow: loading sample data through the real parser, previewing and confirming the import, opening financial-year analysis and downloading a report.
 
-Use the local demo in a fresh browser session, or go to **How it works → Reset demo scenario** and confirm. Sample figures are deterministic for the current calendar date, so they vary across days but the workflow remains repeatable.
+### Emulator limitation
 
-1. **Frame the problem (10 seconds).** “An expense tracker tells you what you spent. SpendSmart shows what you can afford today and why your current pace may overshoot.”
-2. **Budgets (10 seconds).** Set the current monthly overall limit to **₹12,000**, save, and return to Overview. Keep the category selector at **All categories**.
-3. **Explain the distinction (15 seconds).** Point to recorded cash, budget remaining and safe-to-spend today. Open **How today’s guidance is calculated**. Cash includes earlier received funds; a spending cap is not an account balance.
-4. **Make a real change (15 seconds).** Add an expense of **₹250**, category **Food**, note **Judge lunch**. Watch the allowance fall and the forecast rise.
-5. **Expose the differentiator (15 seconds).** Lower the overall budget to **₹8,000**. Open the pace-risk or exceeded-budget alert and **Show the calculation**. The exact alert depends on the date; the underlying figures are computed from records.
-6. **Explore safely (15 seconds).** In Reports, choose Food, enter a **₹500** reduction and compare. On early-month demos the simulator caps the reduction to actual eligible spending. Return to Transactions: Judge lunch remains unchanged.
-7. **Optional depth (20 seconds).** In Plan ahead, record one planned expense as paid. Explain why it becomes one actual transaction rather than being counted twice. Show a savings goal backed by recorded cash.
-
-Reset afterwards to repeat. Explain that the run-rate is a deterministic estimate, not an AI model or guarantee. Expected income never becomes cash until recorded as received.
-
-For a fixed numeric example, use the automated PDF scenario: April 20, ₹5,600 spent, ₹8,000 cap, ₹8,400 forecast, ₹240 after-today allowance versus ₹218.18 inclusive-today allowance with sufficient cash.
-
-## Local run and deployment
+The new Firestore rule and authenticated cloud integration tests are implemented but could not be executed in this environment. Installed Java is Java 8, while the installed Firebase CLI requires Java 21 or newer. A temporary Java 21 download was attempted, but DNS resolution was unavailable. Consequently these commands remain unverified for the new collections and fields:
 
 ```powershell
-cd C:\College\Axion\SpendSmart
-npm ci
-npm run dev
+npm run test:rules
+npm run test:cloud
+npm run test:auth
 ```
 
-Open http://127.0.0.1:5173 and choose the free demo. For built preview, run `npm run build` then `npm run preview -- --port 4173 --strictPort`.
+Install Java 21+, confirm `java -version`, then run those commands sequentially. Earlier repository emulator results do not substitute for executing the upgraded rules.
 
-Production setup requires the six `VITE_FIREBASE_*` web configuration values from `.env.example`, Email/Password enabled, a Firestore database, deployed rules/indexes and authorized local/hosted domains. See [README — Firebase configuration](README.md#firebase-configuration).
+## Privacy and security behavior
 
-For Vercel, run `npx vercel login`, `npx vercel link`, add environment values in the Vercel project, then `npx vercel --prod`. Use Vite, build `npm run build`, output `dist`. Verify the actual HTTPS site and two independent accounts. See [README — Deploy to Vercel](README.md#deploy-to-vercel).
+- CSV/XLSX bytes are parsed and hashed locally, then discarded. Original statements are not uploaded or stored.
+- Account labels are masked before display or persistence. Full account numbers and bank credentials are never requested.
+- Cloud paths remain under `users/{authenticated uid}/...`; rules deny cross-user and anonymous access.
+- Imported data is validated in the UI, store, cloud writer and Firestore rules.
+- Stable import IDs and deterministic transaction IDs make retries idempotent.
+- Cloud annual analysis uses the latest 5,000 owner-scoped transactions and discloses when the cap limits coverage.
+- Demo data remains separate localStorage data. It is explicitly unencrypted and unsuitable for sensitive information on a shared device.
+- Deterministic financial summaries use calculated aggregates. No statement or transaction data is sent to an AI provider.
 
-Application hosting has not been deployed or verified. GitHub publication is separate from the hosting configuration above.
+The user-reported Azure error—`The requested item was created under a different Azure OpenAI resource`—is not generated by SpendSmart. Repository search found no Azure/OpenAI resource configuration, SDK, response item ID or API call. It is an external continuation-state mismatch: an item ID created under one Azure OpenAI resource was later requested through another resource. This work continued from local Git state without reusing that external item. If an external agent service is later configured, it must keep resource endpoint/deployment credentials and stored item IDs paired, or start a new response instead of replaying a cross-resource item ID.
 
-## Highest-priority remaining work
+## Deployment/configuration required
 
-1. Configure the team's real Firebase/Vercel projects and verify the deployed workflow, domains, indexes and password emails.
-2. Add server pagination and durable aggregate summaries if individual monthly ledgers grow large; current pagination is client-side within the queried month.
-3. Reduce initial Firebase bundle loading and measure real-device performance before claiming an improvement.
-4. Conduct manual screen-reader, Safari/Firefox and real-phone testing.
-5. Add whole-account data export/deletion and a privacy/retention policy before a broader real-user pilot.
+No structural Vercel configuration change is required.
 
-Current scope intentionally has no bank integration, payment processing, chatbot, CSV import, PDF report generation, automatic recurring entries, push notifications, multilingual UI or installed PWA. Categories are fixed, while essential/discretionary classification is configurable. Savings funding targets are arithmetic guidance; no future outcome is guaranteed.
+Before cloud imports are used in production:
+
+1. Install Java 21+ and run the three emulator suites above.
+2. Deploy the upgraded Firestore rules and existing indexes:
+
+   ```powershell
+   npx firebase-tools deploy --only firestore:rules,firestore:indexes --project YOUR_PROJECT_ID
+   ```
+
+3. Keep `VITE_USE_FIREBASE_EMULATORS=false` in hosted environments.
+4. Confirm the six existing `VITE_FIREBASE_*` web values, Email/Password authentication and authorized Vercel domain.
+5. Verify import, rollback and two-account isolation against the intended Firebase project before production release.
+
+No service-account key, bank statement, environment secret or real financial data was added.
+
+## Remaining limitations
+
+- PDF statements are not parsed.
+- Proprietary layouts may require manual column mapping.
+- Signed-amount layouts must use negative debits and positive credits; otherwise use separate debit/credit columns or correct the preview.
+- Probable duplicates are intentionally not automatically discarded.
+- Merchant names are conservative normalized descriptions, not externally enriched identities.
+- Recurring suggestions are observations, not verified active subscriptions or guaranteed future charges.
+- Anomaly findings are not fraud determinations.
+- Confirm/dismiss insight choices are review-session state and do not automatically create planned expenses.
+- Cloud historical analysis is capped at the latest 5,000 accessible transactions.
+- The upgraded Firestore rules and authenticated integration paths still need Java 21 emulator verification and real-project deployment verification.
+- The live Vercel deployment was not changed or verified.
+
+## Repeatable demo
+
+1. Run `npm run dev` and choose **Try the free demo**.
+2. Open **Import & Analyze**.
+3. Choose **Load fictional annual statement**. The file is deterministic and contains no real data.
+4. Review totals, categories, classifications and duplicate/validation indicators.
+5. Confirm the selected rows.
+6. Open **Financial Year Review** to inspect period metrics, charts, recurring patterns, anomalies and budget recommendations.
+7. Export a period CSV, reconciliation CSV or PDF report.
+8. Use the existing demo reset to restore the local scenario without affecting cloud accounts.
+
+See `README.md` for supported columns, accounting semantics, privacy details, complete local setup and deployment commands.

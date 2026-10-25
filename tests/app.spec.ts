@@ -98,6 +98,25 @@ test('reports export selected month and historical month removes daily advice', 
   await expect(page.getByRole('heading', { name: 'April 2026 snapshot' })).toBeVisible();
 });
 
+test('local demo imports the fictional financial-year statement and analyzes real parsed rows', async ({ page }) => {
+  await demo(page);
+  await page.getByRole('navigation').getByRole('button', { name: 'Import & Analyze', exact: true }).click();
+  await page.getByRole('button', { name: 'Load fictional sample' }).click();
+  await expect(page.getByText(/Fictional sample loaded/)).toBeVisible();
+  await page.getByRole('button', { name: 'Build transaction preview' }).click();
+  await expect(page.getByText('87', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/Exact duplicates and uncertain matches/)).toBeVisible();
+  await page.getByRole('button', { name: 'Confirm import' }).click();
+  await expect(page.getByText(/87 transactions imported and confirmed/)).toBeVisible();
+  await expect(page.getByRole('table', { name: 'Statement import history' })).toContainText('completed');
+  await page.getByLabel('Starting year').fill('2025');
+  await expect(page.getByText('₹2,16,000', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('netflix subscription', { exact: false }).first()).toBeVisible();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'CSV report' }).click();
+  expect((await downloadPromise).suggestedFilename()).toBe('spendsmart-2025-04-01-2026-03-31.csv');
+});
+
 test('mobile layout supports capture and navigation without horizontal overflow', async ({
   page,
 }) => {

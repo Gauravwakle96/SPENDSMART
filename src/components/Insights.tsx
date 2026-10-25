@@ -5,6 +5,8 @@ import { formatMoney, getMonthlyTrend, monthLabel, parseAmount, transactionsToCS
 import { getFinancialIntelligence, simulateExpenseReduction, type FinancialIntelligence } from '../domain/intelligence';
 import type { FinancialContext, MonthlySummary } from '../domain/planning-types';
 import { EXPENSE_CATEGORIES, type Budget, type BudgetAlert, type BudgetInsights, type Transaction } from '../domain/types';
+import type { ImportRecord } from '../domain/import-types';
+import { FinancialYearReview } from './FinancialYearReview';
 import './insights.css';
 
 interface InsightProps {
@@ -15,6 +17,9 @@ interface InsightProps {
   context?: FinancialContext;
   /** Undefined derives a complete local history; null explicitly means unavailable. */
   monthTrend?: MonthlySummary[] | null;
+  analysisTransactions?: Transaction[];
+  imports?: ImportRecord[];
+  analysisLimited?: boolean;
 }
 
 interface DashboardProps extends InsightProps {
@@ -179,7 +184,7 @@ function ScenarioSimulator({ transactions, budget, monthKey, asOf, context }: In
   return <section className="panel insights-simulator"><div className="insights-panel-heading"><div><p className="eyebrow">WHAT IF?</p><h2>Try a spending reduction</h2><p>Compare a hypothetical change using copies of your records. Your ledger stays unchanged.</p></div><SlidersHorizontal size={19} aria-hidden="true" /></div>{candidates.length === 0 ? <div className="insights-scenario-empty"><p>A reduction needs positive net category spending in {monthLabel(monthKey)}.</p></div> : <><form className="insights-scenario-form" onSubmit={compare}><label><span>Expense category</span><select value={selectedCategory} onChange={(event) => setCategory(event.target.value)}>{candidates.map((candidate) => <option key={candidate.category} value={candidate.category}>{candidate.category} · {formatMoney(candidate.netExpensePaise)} net</option>)}</select></label><label><span>Reduce recorded spending by (₹)</span><input type="text" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} required aria-describedby="insights-scenario-help" /></label><button className="button button-primary" type="submit">Compare scenario<ArrowRight size={15} aria-hidden="true" /></button></form><p id="insights-scenario-help" className="insights-chart-footnote">Reduction is capped at actual net category spending, preserving refunds. Results are hypothetical and never save a transaction.</p></>}{(formError || scenario.error) && <p className="insights-scenario-error" role="alert">{formError || scenario.error}</p>}{scenario.result && <div className="insights-scenario-result" aria-live="polite"><p><strong>Hypothetical reduction: {formatMoney(scenario.result.reductionPaise)}</strong> in {submitted?.category}. {scenario.result.reason}</p><div className="insights-comparison-grid"><div><span>Safe to spend today</span><strong>{moneyOrUnknown(scenario.result.before.safeTodayPaise)}<ArrowRight size={14} aria-hidden="true" />{moneyOrUnknown(scenario.result.after.safeTodayPaise)}</strong></div><div><span>Month-end spending run-rate</span><strong>{scenario.result.before.forecastStatus === 'unavailable' ? 'Unavailable' : formatMoney(scenario.result.before.base.forecastPaise)}<ArrowRight size={14} aria-hidden="true" />{scenario.result.after.forecastStatus === 'unavailable' ? 'Unavailable' : formatMoney(scenario.result.after.base.forecastPaise)}</strong></div><div><span>Projected month-end cash</span><strong>{moneyOrUnknown(scenario.result.before.projectedCashBalancePaise)}<ArrowRight size={14} aria-hidden="true" />{moneyOrUnknown(scenario.result.after.projectedCashBalancePaise)}</strong></div></div></div>}</section>;
 }
 
-export function Reports({ transactions, budget, monthKey, asOf, context, monthTrend }: InsightProps) {
+export function Reports({ transactions, analysisTransactions, imports = [], analysisLimited = false, budget, monthKey, asOf, context, monthTrend }: InsightProps) {
   const intelligence = useMemo(() => getFinancialIntelligence(transactions, budget, asOf, monthKey, context), [transactions, budget, asOf, monthKey, context]);
   const { base: insights } = intelligence;
   const trend = useMemo(() => monthTrend === undefined ? getMonthlyTrend(transactions, asOf) : monthTrend, [transactions, asOf, monthTrend]);
@@ -233,6 +238,7 @@ export function Reports({ transactions, budget, monthKey, asOf, context, monthTr
         </section>
         <section className="panel insights-method-panel"><span className="insights-method-icon"><ShieldCheck size={23} aria-hidden="true" /></span><p className="eyebrow">EVERY NUMBER HAS A REASON</p><h2>Trace the decision.</h2><dl className="insights-method-list"><div><dt>Actual cash</dt><dd>Recorded income + refunds − expenses</dd></div><div><dt>Budget usage</dt><dd>Nonnegative budget spending ÷ limit × 100</dd></div><div><dt>Month-end run-rate</dt><dd>Budget spending ÷ elapsed days × month length</dd></div><div><dt>Safe today</dt><dd>Smallest cash and budget headroom, after commitments and reservations, ÷ days including today</dd></div><div><dt>Expected income</dt><dd>Included in cash projections; excluded from recorded cash and safe today</dd></div></dl><p className="insights-chart-footnote">Run-rate is unavailable without expense history and is labeled early when there are fewer than three records or fewer than seven elapsed days. The original PDF allowance divides budget headroom by days after today; both formulas are visible on the dashboard.</p></section>
       </div>
+      <FinancialYearReview transactions={analysisTransactions ?? transactions} imports={imports} asOf={asOf} analysisLimited={analysisLimited} />
     </div>
   );
 }

@@ -10,10 +10,14 @@ test('core pages, dialog and planning tabs pass automated accessibility and keyb
   await check('Login');
   await page.getByRole('button', { name: 'Try the free demo' }).click();
   await expect(page.locator('.insights-hero')).toBeVisible();
-  for (const name of ['Overview', 'Transactions', 'Budgets', 'Plan ahead', 'Reports', 'How it works']) {
+  for (const name of ['Overview', 'Transactions', 'Import & Analyze', 'Budgets', 'Plan ahead', 'Reports', 'How it works']) {
     await page.getByRole('navigation').getByRole('button', { name, exact: true }).click();
     await check(name);
   }
+  await page.getByRole('navigation').getByRole('button', { name: 'Import & Analyze', exact: true }).click();
+  await page.getByRole('button', { name: 'Load fictional sample' }).click();
+  await page.getByRole('button', { name: 'Build transaction preview' }).click();
+  await check('Import preview');
   await page.getByRole('button', { name: 'Add transaction', exact: true }).first().click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await check('Transaction dialog');

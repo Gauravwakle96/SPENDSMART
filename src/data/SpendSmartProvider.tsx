@@ -3,7 +3,8 @@ import { SpendSmartStore, type SpendSmartState } from './store';
 
 type StoreActions = Pick<SpendSmartStore, 'signIn' | 'signUp' | 'resetPassword' | 'signOut' | 'startDemo' | 'addTransaction' | 'updateTransaction'
   | 'deleteTransaction' | 'saveBudget' | 'clearError' | 'savePlan' | 'savePlannedExpense' | 'deletePlannedExpense' | 'recordPlannedExpense'
-  | 'saveGoal' | 'deleteGoal' | 'resetDemo' | 'setSelectedMonth' | 'refreshCloud'>;
+  | 'saveGoal' | 'deleteGoal' | 'resetDemo' | 'setSelectedMonth' | 'refreshCloud' | 'importTransactions' | 'rollbackImport'
+  | 'saveCategoryRule' | 'deleteCategoryRule'>;
 
 export type SpendSmartContextValue = SpendSmartState & StoreActions;
 const SpendSmartContext = createContext<SpendSmartContextValue | null>(null);
@@ -17,7 +18,8 @@ export function SpendSmartProvider({ children }: { children: ReactNode }) {
     addTransaction: store.addTransaction, updateTransaction: store.updateTransaction, deleteTransaction: store.deleteTransaction, saveBudget: store.saveBudget,
     clearError: store.clearError, savePlan: store.savePlan, savePlannedExpense: store.savePlannedExpense, deletePlannedExpense: store.deletePlannedExpense,
     recordPlannedExpense: store.recordPlannedExpense, saveGoal: store.saveGoal, deleteGoal: store.deleteGoal, resetDemo: store.resetDemo,
-    setSelectedMonth: store.setSelectedMonth, refreshCloud: store.refreshCloud };
+    setSelectedMonth: store.setSelectedMonth, refreshCloud: store.refreshCloud, importTransactions: store.importTransactions,
+    rollbackImport: store.rollbackImport, saveCategoryRule: store.saveCategoryRule, deleteCategoryRule: store.deleteCategoryRule };
   return <SpendSmartContext.Provider value={value}>{children}</SpendSmartContext.Provider>;
 }
 

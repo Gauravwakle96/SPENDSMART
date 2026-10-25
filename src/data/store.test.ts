@@ -1,5 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { todayISO } from '../domain/engine';
+import { transactionCoreHash } from '../domain/import-engine';
+import type { ImportRecord, PreparedImportTransaction } from '../domain/import-types';
 import { createDemoData, DEMO_DATA_KEY, recoverDemoData, serializeDemoData } from './demo';
 import { SpendSmartStore } from './store';
 
@@ -13,6 +15,16 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('local data operations', () => {
+  const preparedImport = (importId: string, id: string): { record: ImportRecord; entries: PreparedImportTransaction[] } => {
+    const base: PreparedImportTransaction['input'] = { type: 'expense', amountPaise: 12345, category: 'Food', date: todayISO(), note: 'Imported lunch',
+      currency: 'INR', classification: 'expense', excludedFromAnalysis: false, importId, accountLabel: 'Salary account', accountKey: 'acct_1234567890abcdef',
+      sourceFileHash: 'a'.repeat(64), sourceRowNumber: 2, sourceFingerprint: 'b'.repeat(16), merchant: 'imported lunch' };
+    const input = { ...base, importOriginalHash: transactionCoreHash(base) };
+    const record: ImportRecord = { id: importId, createdAt: Date.now(), filenames: ['statement.csv'], fileHashes: ['a'.repeat(64)],
+      accountLabels: ['Salary account'], processedCount: 1, importedCount: 1, skippedCount: 0, flaggedCount: 0, invalidCount: 0,
+      status: 'processing', startDate: todayISO(), endDate: todayISO() };
+    return { record, entries: [{ id, input }] };
+  };
   it('retries the same operation ID without duplicating an expense', async () => {
     const store = new SpendSmartStore(); store.startDemo();
     const input = { type: 'expense' as const, amountPaise: 12550, category: 'Food', date: todayISO(), note: 'Idempotent lunch' };
@@ -55,7 +67,22 @@ describe('local data operations', () => {
     data.set(DEMO_DATA_KEY, JSON.stringify({ version: 1, transactions: [], budgets: [] }));
     const store = new SpendSmartStore(); store.startDemo();
     expect(store.getSnapshot().transactions).toEqual([]); expect(store.getSnapshot().planning).toEqual([]);
-    expect(JSON.parse(data.get(DEMO_DATA_KEY)!).version).toBe(2);
+    expect(JSON.parse(data.get(DEMO_DATA_KEY)!).version).toBe(3);
+  });
+
+  it('retries a complete import safely and rolls back only unchanged imported records', async () => {
+    const store = new SpendSmartStore(); store.startDemo();
+    const first = preparedImport('import_retry', 'imp_retry_record');
+    await Promise.all([store.importTransactions(first.record, first.entries), store.importTransactions(first.record, first.entries)]);
+    expect(store.getSnapshot().transactions.filter((item) => item.id === 'imp_retry_record')).toHaveLength(1);
+    expect(store.getSnapshot().imports.find((item) => item.id === 'import_retry')?.status).toBe('completed');
+    const clean = preparedImport('import_clean', 'imp_clean_record');
+    await store.importTransactions(clean.record, clean.entries);
+    expect(await store.rollbackImport('import_clean')).toEqual({ deletedCount: 1, conflictCount: 0 });
+    expect(store.getSnapshot().transactions.some((item) => item.id === 'imp_clean_record')).toBe(false);
+    await store.updateTransaction('imp_retry_record', { type: 'expense', amountPaise: 20000, category: 'Food', date: todayISO(), note: 'Edited imported lunch' });
+    expect(await store.rollbackImport('import_retry')).toEqual({ deletedCount: 0, conflictCount: 1 });
+    expect(store.getSnapshot().transactions.some((item) => item.id === 'imp_retry_record')).toBe(true);
   });
 
   it('preserves valid stored data when only storage writes are blocked', async () => {

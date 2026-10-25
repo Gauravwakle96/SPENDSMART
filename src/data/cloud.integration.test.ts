@@ -4,6 +4,8 @@ import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { confirmPasswordReset, createUserWithEmailAndPassword, getIdToken, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, terminate } from 'firebase/firestore';
 import { getMonthlyTrend, todayISO } from '../domain/engine';
+import { transactionCoreHash } from '../domain/import-engine';
+import type { ImportRecord, PreparedImportTransaction } from '../domain/import-types';
 import { auth, database, usingEmulators } from './firebase';
 import { CloudWriter, loadCloudSummaries, readCloudPage } from './cloud';
 import { SpendSmartStore } from './store';
@@ -86,6 +88,23 @@ describe.skipIf(!enabled)('real local Firebase Auth and cloud adapter integratio
     await writer.deleteTransaction('same-operation');
     await expect(writer.updateTransaction('same-operation', input)).rejects.toThrow('was deleted');
     expect((await getDoc(doc(database!, 'users', result.user.uid, 'transactions', 'same-operation'))).exists()).toBe(false);
+  });
+
+  it('imports a retry-safe batch and rolls back only unchanged records', async () => {
+    const result = await register(); const writer = new CloudWriter(database!, result.user.uid); const date = todayISO();
+    const base: PreparedImportTransaction['input'] = { type: 'expense', amountPaise: 12345, category: 'Food', date, note: 'Imported cloud lunch',
+      currency: 'INR', classification: 'expense', excludedFromAnalysis: false, importId: 'cloud_import', accountLabel: 'Salary account',
+      accountKey: 'acct_1234567890abcdef', sourceFileHash: 'a'.repeat(64), sourceRowNumber: 2, sourceFingerprint: 'b'.repeat(16), merchant: 'cloud lunch' };
+    const input = { ...base, importOriginalHash: transactionCoreHash(base) };
+    const record: ImportRecord = { id: 'cloud_import', createdAt: Date.now(), filenames: ['cloud.csv'], fileHashes: ['a'.repeat(64)],
+      accountLabels: ['Salary account'], processedCount: 1, importedCount: 1, skippedCount: 0, flaggedCount: 0, invalidCount: 0,
+      status: 'processing', startDate: date, endDate: date };
+    const entries = [{ id: 'imp_cloud_record', input }];
+    await Promise.all([writer.importTransactions(record, entries), writer.importTransactions(record, entries)]);
+    expect((await getDocs(collection(database!, 'users', result.user.uid, 'transactions'))).size).toBe(1);
+    await writer.updateTransaction('imp_cloud_record', { type: 'expense', amountPaise: 20000, category: 'Food', date, note: 'Edited cloud lunch' });
+    expect(await writer.rollbackImport('cloud_import')).toEqual({ deletedCount: 0, conflictCount: 1 });
+    expect((await getDoc(doc(database!, 'users', result.user.uid, 'transactions', 'imp_cloud_record'))).exists()).toBe(true);
   });
 
   it('resets a password through the emulator outbox without sending a real email', async () => {
