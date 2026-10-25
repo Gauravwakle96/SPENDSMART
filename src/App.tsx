@@ -27,6 +27,7 @@ import {
   X,
   CalendarCheck,
   RotateCcw,
+  FileUp,
 } from 'lucide-react';
 import { Transactions } from './components/Transactions';
 import { Planning } from './components/Planning';
@@ -50,16 +51,20 @@ import {
   type TransactionType,
 } from './domain/types';
 
-type Page = 'dashboard' | 'transactions' | 'budgets' | 'planning' | 'reports' | 'guide';
+type Page = 'dashboard' | 'transactions' | 'import' | 'budgets' | 'planning' | 'reports' | 'guide';
 const Dashboard = lazy(() =>
   import('./components/Insights').then((module) => ({ default: module.Dashboard })),
 );
 const Reports = lazy(() =>
   import('./components/Insights').then((module) => ({ default: module.Reports })),
 );
+const ImportAnalyze = lazy(() =>
+  import('./components/ImportAnalyze').then((module) => ({ default: module.ImportAnalyze })),
+);
 const pages = [
   { id: 'dashboard' as const, label: 'Overview', icon: LayoutDashboard },
   { id: 'transactions' as const, label: 'Transactions', icon: ReceiptText },
+  { id: 'import' as const, label: 'Import & Analyze', icon: FileUp },
   { id: 'budgets' as const, label: 'Budgets', icon: Wallet },
   { id: 'planning' as const, label: 'Plan ahead', icon: CalendarCheck },
   { id: 'reports' as const, label: 'Reports', icon: TrendingUp },
@@ -651,7 +656,7 @@ function Guide({ isDemo }: { isDemo: boolean }) {
         <p className="muted">
           {isDemo
             ? 'This is a local demo with sample transactions. Edits are saved in this browser only, and are not uploaded. Anyone with access to this browser may see these demo records. Cloud login uses a separate ledger.'
-            : 'Your records are scoped to your signed-in account. They are entered by you; SpendSmart does not connect to your bank.'}
+            : 'Your records are scoped to your signed-in account. Supported statement files are parsed locally; SpendSmart does not request or connect with bank login credentials.'}
         </p>
         <p className="muted">
           Amounts use INR. Dates use your local calendar. The month picker determines which month
@@ -706,6 +711,8 @@ function Workspace() {
       ? `A clearer picture, ${userName}.`
       : page === 'transactions'
         ? 'Your everyday money story.'
+        : page === 'import'
+          ? 'Turn statements into useful decisions.'
         : page === 'budgets'
           ? 'Plan a little. Breathe easier.'
           : page === 'reports'
@@ -937,6 +944,9 @@ function Workspace() {
                 ) : (
                   <Reports
                     transactions={store.transactions}
+                    analysisTransactions={store.analysisTransactions}
+                    imports={store.imports}
+                    analysisLimited={store.analysisLimited}
                     budget={budget}
                     monthKey={monthKey}
                     asOf={asOf}
@@ -956,6 +966,11 @@ function Workspace() {
               onAdded={() => setEditing(null)}
               notify={setToast}
             />
+          )}
+          {store.ready && page === 'import' && (
+            <Suspense fallback={<section className="panel"><p className="muted" role="status">Preparing the local statement importer…</p></section>}>
+              <ImportAnalyze asOf={asOf} />
+            </Suspense>
           )}
           {store.ready && page === 'budgets' && (
             <>

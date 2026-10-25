@@ -1,6 +1,7 @@
 import {
   EXPENSE_CATEGORIES,
   INCOME_CATEGORIES,
+  TRANSACTION_CLASSIFICATIONS,
   type Budget,
   type BudgetAlert,
   type BudgetInsights,
@@ -131,6 +132,32 @@ export function validateTransaction(input: TransactionInput, asOf = todayISO()):
   dateParts(input.date);
   if (input.date > asOf) throw new Error('Future transactions cannot be recorded yet.');
   if (typeof input.note !== 'string' || input.note.length > 500) throw new Error('Keep the note to 500 characters or fewer.');
+  if (input.classification !== undefined && !(TRANSACTION_CLASSIFICATIONS as readonly string[]).includes(input.classification)) {
+    throw new Error('Choose a supported transaction classification.');
+  }
+  if (input.excludedFromAnalysis !== undefined && typeof input.excludedFromAnalysis !== 'boolean') {
+    throw new Error('The analysis inclusion flag must be true or false.');
+  }
+  if (input.accountLabel !== undefined && (typeof input.accountLabel !== 'string' || input.accountLabel.length > 80)) {
+    throw new Error('Keep the account label to 80 characters or fewer.');
+  }
+  if (input.merchant !== undefined && (typeof input.merchant !== 'string' || input.merchant.length > 100)) {
+    throw new Error('Keep the merchant label to 100 characters or fewer.');
+  }
+  if (input.sourceTransactionId !== undefined && (typeof input.sourceTransactionId !== 'string' || input.sourceTransactionId.length > 128)) {
+    throw new Error('Keep the bank reference to 128 characters or fewer.');
+  }
+  const imported = input.importId !== undefined || input.sourceFileHash !== undefined || input.sourceRowNumber !== undefined
+    || input.sourceFingerprint !== undefined || input.importOriginalHash !== undefined || input.accountKey !== undefined;
+  if (imported) {
+    if (typeof input.importId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(input.importId)) throw new Error('The import ID is invalid.');
+    if (typeof input.accountKey !== 'string' || !/^acct_[a-f0-9]{16}$/.test(input.accountKey)) throw new Error('The imported account key is invalid.');
+    if (typeof input.sourceFileHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.sourceFileHash)) throw new Error('The statement file fingerprint is invalid.');
+    if (!Number.isSafeInteger(input.sourceRowNumber) || input.sourceRowNumber! < 1 || input.sourceRowNumber! > 1_000_000) throw new Error('The source row number is invalid.');
+    if (typeof input.sourceFingerprint !== 'string' || !/^[a-f0-9]{16}$/.test(input.sourceFingerprint)) throw new Error('The transaction fingerprint is invalid.');
+    if (typeof input.importOriginalHash !== 'string' || !/^[a-f0-9]{16}$/.test(input.importOriginalHash)) throw new Error('The original import checksum is invalid.');
+    if (input.classification === undefined || input.excludedFromAnalysis === undefined) throw new Error('Imported transactions require a classification and analysis decision.');
+  }
 }
 
 export function validateBudget(budget: Budget): void {
@@ -163,11 +190,12 @@ export function getBudgetInsights(
   const elapsedDays = isCurrent ? current.day : monthKey < currentMonth ? daysInMonth : 0;
   const daysRemaining = isCurrent ? daysInMonth - elapsedDays : monthKey < currentMonth ? 0 : daysInMonth;
 
-  const recorded = transactions.filter(transaction => {
+  const recordedAll = transactions.filter(transaction => {
     // Validate the record itself; a historical asOf still excludes later valid records rather than rejecting them.
     validateTransaction(transaction, transaction.date);
     return transaction.date <= asOf;
   });
+  const recorded = recordedAll.filter(transaction => !transaction.excludedFromAnalysis);
   const monthly = recorded.filter(transaction => transaction.date.slice(0, 7) === monthKey);
   const incomeRaw = sumRaw(monthly.filter(t => t.type === 'income').map(t => t.amountPaise));
   const expenseRaw = sumRaw(monthly.filter(t => t.type === 'expense').map(t => t.amountPaise));
@@ -254,14 +282,15 @@ export function getBudgetInsights(
     netExpensePaise, signedCategorySpend,
     refundAdjustmentPaise: checkedInteger(sumRaw(categorySpend.map(item => item.spentPaise)) - netRaw),
     categorySpend, alerts, chartData,
-    recentTransactions: [...monthly].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt).slice(0, 5) };
+    recentTransactions: recordedAll.filter(transaction => transaction.date.slice(0, 7) === monthKey)
+      .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt).slice(0, 5) };
 }
 
 export function getMonthlyTrend(transactions: Transaction[], asOf: string): { monthKey: string; label: string; incomePaise: number; expensePaise: number; netExpensePaise: number; arithmeticLimited: boolean }[] {
   const { year, month } = dateParts(asOf);
   const recorded = transactions.filter(transaction => {
     validateTransaction(transaction, transaction.date);
-    return transaction.date <= asOf;
+    return transaction.date <= asOf && !transaction.excludedFromAnalysis;
   });
   return Array.from({ length: 6 }, (_, index) => {
     const monthIndex = year * 12 + month - 1 - (5 - index);
@@ -290,9 +319,10 @@ function decimalRupees(paise: number): string {
 }
 
 export function transactionsToCSV(transactions: Transaction[]): string {
-  const rows = [['Date', 'Type', 'Category', `Amount (${BUDGET_POLICY.currency})`, 'Note'], ...transactions.map(t => {
+  const rows = [['Date', 'Type', 'Category', `Amount (${BUDGET_POLICY.currency})`, 'Note', 'Classification', 'Account', 'Included in analysis'], ...transactions.map(t => {
     validateTransaction(t, t.date);
-    return [t.date, t.type, t.category, decimalRupees(t.amountPaise), t.note];
+    return [t.date, t.type, t.category, decimalRupees(t.amountPaise), t.note, t.classification ?? t.type,
+      t.accountLabel ?? '', t.excludedFromAnalysis ? 'No' : 'Yes'];
   })];
   return '\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }

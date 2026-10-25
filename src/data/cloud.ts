@@ -1,12 +1,14 @@
 import {
   collection, deleteField, doc, getAggregateFromServer, getCountFromServer, getDocs, limit, orderBy,
-  query, runTransaction, serverTimestamp, sum, where, type Firestore,
+  query, runTransaction, serverTimestamp, sum, where, writeBatch, type Firestore,
 } from 'firebase/firestore';
 import { getMonthlyTrend, monthLabel, todayISO } from '../domain/engine';
 import type { Budget, TransactionInput } from '../domain/types';
 import type { MonthlySummary, PlannedExpense, SavingsGoal, StudentPlan } from '../domain/planning-types';
-import { readPlannedExpense, readTransaction } from './demo';
-import { MAX_GOALS, MAX_OPEN_PLANNED_EXPENSES } from './validation';
+import type { CategoryRule, ImportRecord, ImportRollbackResult, PreparedImportTransaction } from '../domain/import-types';
+import { transactionCoreHash } from '../domain/import-engine';
+import { readImportRecord, readPlannedExpense, readTransaction } from './demo';
+import { MAX_CATEGORY_RULES, MAX_GOALS, MAX_OPEN_PLANNED_EXPENSES, validateCategoryRule, validateImportRecord } from './validation';
 
 export function monthRange(monthKey: string): { start: string; end: string } {
   monthLabel(monthKey);
@@ -185,6 +187,101 @@ export class CloudWriter {
   async deleteGoal(id: string): Promise<void> {
     await runTransaction(this.db, async (transaction) => {
       const reference = this.ref('goals', id);
+      const current = await transaction.get(reference);
+      if (current.exists()) transaction.delete(reference);
+    });
+  }
+
+  async importTransactions(record: ImportRecord, records: PreparedImportTransaction[]): Promise<void> {
+    validateImportRecord(record);
+    if (records.length !== record.importedCount) throw new Error('The prepared import does not match its reconciliation record.');
+    records.forEach((entry) => {
+      if (!/^[A-Za-z0-9_-]{1,100}$/.test(entry.id) || entry.input.importId !== record.id) throw new Error('An imported transaction ID is invalid.');
+    });
+    const historyRef = this.ref('imports', record.id);
+    await runTransaction(this.db, async (transaction) => {
+      const current = await transaction.get(historyRef);
+      if (current.exists()) {
+        const saved = readImportRecord(record.id, current.data());
+        if (!saved || saved.fileHashes.join('|') !== record.fileHashes.join('|') || saved.processedCount !== record.processedCount) {
+          throw new Error('This import ID already belongs to another statement session.');
+        }
+        if (saved.status === 'completed') return;
+        if (saved.status === 'rolled_back' || saved.status === 'partial_rollback') throw new Error('A rolled-back import cannot be submitted again. Start a new import session.');
+        transaction.update(historyRef, { status: 'processing', updatedAt: serverTimestamp() });
+        return;
+      }
+      const { id: discarded, createdAt: ignoredCreatedAt, updatedAt: ignoredUpdatedAt, ...fields } = record;
+      void discarded; void ignoredCreatedAt; void ignoredUpdatedAt;
+      transaction.set(historyRef, { ...fields, status: 'processing', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    });
+    for (let offset = 0; offset < records.length; offset += 150) {
+      const chunk = records.slice(offset, offset + 150);
+      await runTransaction(this.db, async (transaction) => {
+        const references = chunk.map((entry) => this.ref('transactions', entry.id));
+        const existing = await Promise.all(references.map((reference) => transaction.get(reference)));
+        existing.forEach((snapshot, index) => {
+          const entry = chunk[index];
+          if (snapshot.exists()) {
+            if (snapshot.data().importId !== record.id) throw new Error('An import transaction ID already belongs to another record.');
+            return;
+          }
+          transaction.set(references[index], { ...entry.input, currency: 'INR', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        });
+      });
+    }
+    await runTransaction(this.db, async (transaction) => {
+      const current = await transaction.get(historyRef);
+      if (!current.exists()) throw new Error('The import history record disappeared before confirmation.');
+      transaction.update(historyRef, { status: 'completed', importedCount: records.length, updatedAt: serverTimestamp() });
+    });
+  }
+
+  async rollbackImport(importId: string): Promise<ImportRollbackResult> {
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(importId)) throw new Error('The import ID is invalid.');
+    const snapshot = await getDocs(query(this.entries('transactions'), where('importId', '==', importId), limit(5001)));
+    if (snapshot.size > 5000) throw new Error('This import exceeds the safe rollback limit. Contact support before deleting records.');
+    const removable: (typeof snapshot.docs)[number][] = [];
+    let conflictCount = 0;
+    snapshot.docs.forEach((record) => {
+      const value = record.data();
+      const decoded = readTransaction(record.id, value, typeof value.date === 'string' ? value.date : todayISO());
+      if (!decoded || value.plannedExpenseId !== undefined || !decoded.importOriginalHash) { conflictCount += 1; return; }
+      const { id: discardedId, createdAt: discardedCreatedAt, ...input } = decoded;
+      void discardedId; void discardedCreatedAt;
+      if (transactionCoreHash(input) !== decoded.importOriginalHash) { conflictCount += 1; return; }
+      removable.push(record);
+    });
+    for (let offset = 0; offset < removable.length; offset += 400) {
+      const batch = writeBatch(this.db);
+      removable.slice(offset, offset + 400).forEach((record) => batch.delete(record.ref));
+      await batch.commit();
+    }
+    const historyRef = this.ref('imports', importId);
+    await runTransaction(this.db, async (transaction) => {
+      const history = await transaction.get(historyRef);
+      if (!history.exists()) return;
+      transaction.update(historyRef, { status: conflictCount ? 'partial_rollback' : 'rolled_back', updatedAt: serverTimestamp() });
+    });
+    return { deletedCount: removable.length, conflictCount };
+  }
+
+  async saveCategoryRule(rule: CategoryRule): Promise<void> {
+    validateCategoryRule(rule);
+    const reference = this.ref('categoryRules', rule.id);
+    const { count } = (await getCountFromServer(this.entries('categoryRules'))).data();
+    await runTransaction(this.db, async (transaction) => {
+      const current = await transaction.get(reference);
+      if (!current.exists() && count >= MAX_CATEGORY_RULES) throw new Error(`Keep at most ${MAX_CATEGORY_RULES} reusable categorization rules.`);
+      transaction.set(reference, { matchText: rule.matchText, direction: rule.direction, category: rule.category,
+        classification: rule.classification, excludedFromAnalysis: rule.excludedFromAnalysis,
+        createdAt: current.exists() ? current.data().createdAt : serverTimestamp(), updatedAt: serverTimestamp() });
+    });
+  }
+
+  async deleteCategoryRule(id: string): Promise<void> {
+    await runTransaction(this.db, async (transaction) => {
+      const reference = this.ref('categoryRules', id);
       const current = await transaction.get(reference);
       if (current.exists()) transaction.delete(reference);
     });

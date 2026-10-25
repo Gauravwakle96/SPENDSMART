@@ -143,7 +143,8 @@ export function getFinancialIntelligence(
     if (!fits(amount)) precisionLimited = true;
     return Number(amount > MAX ? MAX : amount < -MAX ? -MAX : amount);
   };
-  const monthly = transactions.filter(transaction => transaction.date <= asOf && transaction.date.slice(0, 7) === monthKey);
+  const monthly = transactions.filter(transaction => !transaction.excludedFromAnalysis
+    && transaction.date <= asOf && transaction.date.slice(0, 7) === monthKey);
   const monthlyExpenseCount = monthly.filter(transaction => transaction.type === 'expense').length;
   const satisfiedPlans = recordedPlanIds(plans);
   const unpaid = plans.filter(plan => !satisfiedPlans.has(plan.id)
@@ -313,7 +314,8 @@ export function simulateExpenseReduction(
   const categoryNet = Math.max(0, before.base.signedCategorySpend.find(item => item.category === category)!.netExpensePaise);
   const appliedReduction = Math.min(reductionPaise, categoryNet);
   let remaining = appliedReduction;
-  const sortedEligible = [...transactions].filter(transaction => transaction.type === 'expense' && transaction.category === category
+  const sortedEligible = [...transactions].filter(transaction => !transaction.excludedFromAnalysis
+    && transaction.type === 'expense' && transaction.category === category
     && transaction.date <= asOf && transaction.date.slice(0, 7) === monthKey)
     .sort((first, second) => second.date.localeCompare(first.date) || second.createdAt - first.createdAt || first.id.localeCompare(second.id));
   const adjustments = new Map<string, number>();

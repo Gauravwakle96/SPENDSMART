@@ -99,6 +99,16 @@ describe('explainable budget decisions', () => {
     expect(excess.safeDailyPaise).toBe(1000);
   });
 
+  it('keeps explicitly excluded account movements out of budgets, cash totals, and trends', () => {
+    const records: Transaction[] = [expense(10000), { ...expense(900000), id: 'transfer', classification: 'internal_transfer', excludedFromAnalysis: true },
+      { ...expense(500000), id: 'card-payment', classification: 'credit_card_payment', excludedFromAnalysis: true }];
+    const result = getBudgetInsights(records, budget(100000), '2026-04-20');
+    expect(result.totalExpensePaise).toBe(10000);
+    expect(result.balancePaise).toBe(-10000);
+    expect(result.recentTransactions).toHaveLength(3);
+    expect(getMonthlyTrend(records, '2026-04-20').at(-1)?.expensePaise).toBe(10000);
+  });
+
   it('issues explainable category alerts independently of the monthly budget', () => {
     const limits: Budget = { ...budget(), categoryLimits: { Food: 10000, Travel: 10000, Health: 0 } };
     const result = getBudgetInsights([expense(8000), expense(10001, '2026-04-20', 'Travel')], limits, '2026-04-20');

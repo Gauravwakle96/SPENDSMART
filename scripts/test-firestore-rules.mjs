@@ -250,3 +250,50 @@ test('removing a paid planning item preserves the expense and clears its recipro
   remove.delete(planned(db)); remove.update(transaction(db, 'payment'), { plannedExpenseId: deleteField(), updatedAt: serverTimestamp() });
   await assertSucceeds(remove.commit()); await assertSucceeds(getDoc(transaction(db, 'payment')));
 });
+
+const importedTransaction = {
+  ...validTransaction,
+  classification: 'expense',
+  excludedFromAnalysis: false,
+  importId: 'import_one',
+  accountLabel: 'Salary account',
+  accountKey: 'acct_1234567890abcdef',
+  sourceTransactionId: 'BANK-REFERENCE-1',
+  sourceFileHash: 'a'.repeat(64),
+  sourceRowNumber: 2,
+  sourceFingerprint: 'b'.repeat(16),
+  importOriginalHash: 'c'.repeat(16),
+  merchant: 'grocery store',
+};
+const validImport = {
+  filenames: ['statement.csv'], fileHashes: ['a'.repeat(64)], accountLabels: ['Salary account'],
+  processedCount: 1, importedCount: 1, skippedCount: 0, flaggedCount: 0, invalidCount: 0,
+  status: 'processing', startDate: '2026-10-24', endDate: '2026-10-24', createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+};
+const validRule = { matchText: 'grocery store', direction: 'debit', category: 'Food', classification: 'expense', excludedFromAnalysis: false,
+  createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
+
+test('import metadata, history and categorization rules are owner-scoped and schema validated', async () => {
+  const db = owner();
+  const history = doc(db, 'users', 'alice', 'imports', 'import_one');
+  const rule = doc(db, 'users', 'alice', 'categoryRules', 'rule_one');
+  await assertSucceeds(setDoc(transaction(db, 'imported'), importedTransaction));
+  await assertSucceeds(setDoc(history, validImport));
+  await assertSucceeds(setDoc(rule, validRule));
+  await assertSucceeds(updateDoc(history, { status: 'completed', updatedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(rule, { category: 'Shopping', updatedAt: serverTimestamp() }));
+  await assertFails(deleteDoc(history));
+  await assertSucceeds(deleteDoc(rule));
+  const other = stranger();
+  await assertFails(getDoc(doc(other, 'users', 'alice', 'imports', 'import_one')));
+  await assertFails(getDoc(doc(other, 'users', 'alice', 'categoryRules', 'rule_one')));
+});
+
+test('import schemas reject incomplete provenance and unreconciled history counts', async () => {
+  const db = owner();
+  const missing = { ...importedTransaction };
+  delete missing.sourceFileHash;
+  await assertFails(setDoc(transaction(db, 'missing-import-field'), missing));
+  await assertFails(setDoc(doc(db, 'users', 'alice', 'imports', 'bad_counts'), { ...validImport, importedCount: 0 }));
+  await assertFails(setDoc(doc(db, 'users', 'alice', 'categoryRules', 'bad_rule'), { ...validRule, direction: 'sideways' }));
+});

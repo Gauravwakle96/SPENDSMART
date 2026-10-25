@@ -3,22 +3,26 @@ import { collection, limit, onSnapshot, orderBy, query, where, type QuerySnapsho
 import { getMonthlyTrend, monthLabel, todayISO, validateBudget, validateTransaction } from '../domain/engine';
 import type { Budget, Transaction, TransactionInput, UserProfile } from '../domain/types';
 import type { MonthlySummary, PlannedExpense, SavingsGoal, StudentPlan } from '../domain/planning-types';
+import type { CategoryRule, ImportRecord, ImportRollbackResult, PreparedImportTransaction } from '../domain/import-types';
+import { transactionCoreHash } from '../domain/import-engine';
 import { auth, database } from './firebase';
 import { CloudWriter, loadCloudSummaries, monthRange } from './cloud';
-import { createDemoData, DEMO_DATA_KEY, DEMO_SESSION_KEY, readBudget, readPlannedExpense, readSavingsGoal, readStudentPlan, readTransaction,
+import { createDemoData, DEMO_DATA_KEY, DEMO_SESSION_KEY, readBudget, readCategoryRule, readImportRecord, readPlannedExpense, readSavingsGoal, readStudentPlan, readTransaction,
   recoverDemoData, serializeDemoData, type DemoData } from './demo';
-import { MAX_GOALS, MAX_OPEN_PLANNED_EXPENSES, validatePlannedExpense, validateSavingsGoal, validateStudentPlan, validRecordId } from './validation';
+import { MAX_ANALYSIS_TRANSACTIONS, MAX_CATEGORY_RULES, MAX_GOALS, MAX_IMPORT_HISTORY, MAX_OPEN_PLANNED_EXPENSES,
+  validateCategoryRule, validateImportRecord, validatePlannedExpense, validateSavingsGoal, validateStudentPlan, validRecordId } from './validation';
 
 export type SyncStatus = 'synced' | 'offline' | 'pending' | 'error' | 'session-only';
 type Mode = 'signed-out' | 'demo' | 'cloud';
 export interface SpendSmartState {
   mode: Mode; user: UserProfile | null; ready: boolean; error: string | null;
   transactions: Transaction[]; budgets: Budget[]; planning: StudentPlan[]; plannedExpenses: PlannedExpense[]; goals: SavingsGoal[];
+  analysisTransactions: Transaction[]; analysisLimited: boolean; imports: ImportRecord[]; categoryRules: CategoryRule[];
   syncStatus: SyncStatus; ledgerBalancePaise: number | null; monthTrend: MonthlySummary[] | null;
   summaryUpdatedAt: number | null; selectedMonth: string;
 }
 
-const emptyDemo = (): DemoData => ({ transactions: [], budgets: [], planning: [], plannedExpenses: [], goals: [] });
+const emptyDemo = (): DemoData => ({ transactions: [], budgets: [], planning: [], plannedExpenses: [], goals: [], imports: [], categoryRules: [] });
 const demoUser: UserProfile = { uid: 'local-demo', email: '', displayName: 'Demo student' };
 const sortTransactions = (records: Transaction[]) => [...records].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt || a.id.localeCompare(b.id));
 
@@ -53,6 +57,7 @@ export function friendlyError(cause: unknown): string {
 export class SpendSmartStore {
   private state: SpendSmartState = { mode: 'signed-out', user: null, ready: !auth || !database, error: null,
     transactions: [], budgets: [], planning: [], plannedExpenses: [], goals: [], syncStatus: 'synced',
+    analysisTransactions: [], analysisLimited: false, imports: [], categoryRules: [],
     ledgerBalancePaise: null, monthTrend: null, summaryUpdatedAt: null, selectedMonth: todayISO().slice(0, 7) };
   private subscribers = new Set<() => void>();
   private streams: Unsubscribe[] = [];
@@ -88,7 +93,8 @@ export class SpendSmartStore {
     this.readGeneration++; this.streams.forEach((unsubscribe) => unsubscribe()); this.streams = []; this.pendingSnapshots.clear(); this.failedStreams.clear();
     if (this.summaryTimer) clearTimeout(this.summaryTimer); this.summaryTimer = null; this.summaryRequest++;
   }
-  private clearRecords() { this.patch({ transactions: [], budgets: [], planning: [], plannedExpenses: [], goals: [], ledgerBalancePaise: null, monthTrend: null, summaryUpdatedAt: null }); }
+  private clearRecords() { this.patch({ transactions: [], budgets: [], planning: [], plannedExpenses: [], goals: [],
+    analysisTransactions: [], analysisLimited: false, imports: [], categoryRules: [], ledgerBalancePaise: null, monthTrend: null, summaryUpdatedAt: null }); }
   private sessionActive() { try { return localStorage.getItem(DEMO_SESSION_KEY) === 'active'; } catch { return false; } }
 
   connect = () => {
@@ -138,6 +144,8 @@ export class SpendSmartStore {
     this.demoData = data;
     this.patch({ transactions: sortTransactions(data.transactions), budgets: [...data.budgets].sort((a, b) => b.monthKey.localeCompare(a.monthKey)),
       planning: data.planning, plannedExpenses: [...data.plannedExpenses].sort((a, b) => a.dueDate.localeCompare(b.dueDate)), goals: data.goals,
+      analysisTransactions: sortTransactions(data.transactions), analysisLimited: false,
+      imports: [...data.imports].sort((a, b) => b.createdAt - a.createdAt), categoryRules: [...data.categoryRules].sort((a, b) => b.createdAt - a.createdAt),
       ledgerBalancePaise: null, monthTrend: getMonthlyTrend(data.transactions, todayISO()), summaryUpdatedAt: Date.now() }); this.sync();
   }
   private readLatestDemo(): DemoData {
@@ -177,7 +185,7 @@ export class SpendSmartStore {
     const range = monthRange(this.state.selectedMonth);
     const months = [...new Set([...getMonthlyTrend([], todayISO()).map((month) => month.monthKey), this.state.selectedMonth])];
     const loaded = new Set<string>(), upcoming = new Map<string, PlannedExpense[]>();
-    const markReady = (key: string) => { loaded.add(key); if (loaded.size === 6) this.patch({ ready: true }); };
+    const markReady = (key: string) => { loaded.add(key); if (loaded.size === 9) this.patch({ ready: true }); };
     const failure = (key: string, cause: unknown) => {
       if (generation !== this.readGeneration) return;
       this.dataFaults.add(key); this.patch({ ready: true, error: friendlyError(cause), ledgerBalancePaise: null, monthTrend: null }); this.sync();
@@ -202,6 +210,17 @@ export class SpendSmartStore {
     this.streams = [
       onSnapshot(query(collection(db, 'users', uid, 'transactions'), where('date', '>=', range.start), where('date', '<=', range.end), orderBy('date', 'desc')), { includeMetadataChanges: true },
         (snapshot) => { if (generation !== this.readGeneration) return; this.patch({ ledgerBalancePaise: null, monthTrend: null }); consume('transactions', snapshot, readTransaction, (records) => this.patch({ transactions: sortTransactions(records) })); if (!snapshot.metadata.hasPendingWrites) this.scheduleSummary(); }, (cause) => streamFailure('transactions', cause)),
+      onSnapshot(query(collection(db, 'users', uid, 'transactions'), orderBy('date', 'desc'), limit(MAX_ANALYSIS_TRANSACTIONS + 1)), { includeMetadataChanges: true },
+        (snapshot) => {
+          if (generation !== this.readGeneration) return;
+          this.pendingSnapshots.set('analysis transactions', snapshot.metadata.hasPendingWrites);
+          const decoded = snapshot.docs.slice(0, MAX_ANALYSIS_TRANSACTIONS).map((record) => readTransaction(record.id, record.data({ serverTimestamps: 'estimate' })));
+          if (decoded.some((record) => record === null)) failure('analysis transactions', new Error('Some historical transactions are invalid. Annual analysis is unavailable until they are repaired.'));
+          else this.dataFaults.delete('analysis transactions');
+          this.patch({ analysisTransactions: sortTransactions(decoded.filter((record): record is Transaction => record !== null)),
+            analysisLimited: snapshot.size > MAX_ANALYSIS_TRANSACTIONS });
+          markReady('analysis transactions'); this.sync();
+        }, (cause) => streamFailure('analysis transactions', cause)),
       onSnapshot(query(collection(db, 'users', uid, 'budgets'), where('monthKey', 'in', months)), { includeMetadataChanges: true },
         (snapshot) => consume('budgets', snapshot, readBudget, (records) => this.patch({ budgets: records })), (cause) => streamFailure('budgets', cause)),
       onSnapshot(query(collection(db, 'users', uid, 'planning'), where('monthKey', 'in', months)), { includeMetadataChanges: true },
@@ -212,6 +231,10 @@ export class SpendSmartStore {
         (snapshot) => consume('month planned expenses', snapshot, readPlannedExpense, (records) => mergeUpcoming('month', records), MAX_OPEN_PLANNED_EXPENSES), (cause) => streamFailure('month planned expenses', cause)),
       onSnapshot(query(collection(db, 'users', uid, 'goals'), orderBy('createdAt', 'desc'), limit(MAX_GOALS + 1)), { includeMetadataChanges: true },
         (snapshot) => consume('goals', snapshot, readSavingsGoal, (records) => this.patch({ goals: records }), MAX_GOALS), (cause) => streamFailure('goals', cause)),
+      onSnapshot(query(collection(db, 'users', uid, 'imports'), orderBy('createdAt', 'desc'), limit(MAX_IMPORT_HISTORY)), { includeMetadataChanges: true },
+        (snapshot) => consume('imports', snapshot, readImportRecord, (records) => this.patch({ imports: records }), MAX_IMPORT_HISTORY), (cause) => streamFailure('imports', cause)),
+      onSnapshot(query(collection(db, 'users', uid, 'categoryRules'), orderBy('createdAt', 'desc'), limit(MAX_CATEGORY_RULES + 1)), { includeMetadataChanges: true },
+        (snapshot) => consume('category rules', snapshot, readCategoryRule, (records) => this.patch({ categoryRules: records }), MAX_CATEGORY_RULES), (cause) => streamFailure('category rules', cause)),
     ]; this.scheduleSummary();
   }
   private scheduleSummary() {
@@ -281,10 +304,8 @@ export class SpendSmartStore {
     else if (auth) await signOut(auth);
   });
 
-  private async change(demoAction: (data: DemoData) => DemoData, cloudAction: (writer: CloudWriter) => Promise<void>) {
+  private async cloudWrite<T>(cloudAction: (writer: CloudWriter) => Promise<T>): Promise<T> {
     const generation = this.identityGeneration; this.patch({ error: null });
-    if (this.state.mode === 'demo') { try { await this.mutateDemo(demoAction); }
-      catch (cause) { if (generation === this.identityGeneration) this.patch({ error: friendlyError(cause) }); throw new Error(friendlyError(cause), { cause }); } return; }
     if (!database || !auth || this.state.mode !== 'cloud' || !this.state.user || auth.currentUser?.uid !== this.state.user.uid) throw new Error('Please sign in before changing cloud records.');
     if (!this.online()) { const message = 'You are offline. Reconnect before saving; no cloud save was started.'; this.patch({ error: message }); this.sync(); throw new Error(message); }
     const writer = new CloudWriter(database, this.state.user.uid); this.pending++;
@@ -293,17 +314,23 @@ export class SpendSmartStore {
     const operation = auth.currentUser.getIdToken().then(() => {
       if (generation !== this.identityGeneration || this.state.mode !== 'cloud') throw new Error('Your session changed. Please sign in again.');
       return cloudAction(writer);
-    }).then(() => { if (generation === this.identityGeneration) { this.dataFaults.delete('write'); this.scheduleSummary(); } })
+    }).then((result) => { if (generation === this.identityGeneration) { this.dataFaults.delete('write'); this.scheduleSummary(); } return result; })
       .catch(async (cause: unknown) => {
         if (generation === this.identityGeneration) { this.dataFaults.add('write'); this.patch({ error: friendlyError(cause) });
           await this.handleSessionFailure(cause, generation); }
         throw cause;
       }).finally(() => { if (generation === this.identityGeneration) { this.pending = Math.max(0, this.pending - 1); this.sync(); } });
-    try { await Promise.race([operation, new Promise<never>((_, reject) => {
+    try { return await Promise.race([operation, new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error('Cloud save is not confirmed yet. The operation may still finish. Reconnect and refresh before retrying; transaction retries keep the same operation ID.')), 12000);
     })]); }
     catch (cause) { if (generation === this.identityGeneration) { this.patch({ error: friendlyError(cause) }); this.sync(); } throw new Error(friendlyError(cause), { cause }); }
     finally { if (timer) clearTimeout(timer); }
+  }
+  private async change(demoAction: (data: DemoData) => DemoData, cloudAction: (writer: CloudWriter) => Promise<void>) {
+    const generation = this.identityGeneration; this.patch({ error: null });
+    if (this.state.mode === 'demo') { try { await this.mutateDemo(demoAction); }
+      catch (cause) { if (generation === this.identityGeneration) this.patch({ error: friendlyError(cause) }); throw new Error(friendlyError(cause), { cause }); } return; }
+    await this.cloudWrite(cloudAction);
   }
   addTransaction = (input: TransactionInput, operationId: string = crypto.randomUUID()) => {
     const normalized = { ...input, note: input.note.trim() }; validateTransaction(normalized);
@@ -360,6 +387,59 @@ export class SpendSmartStore {
     }, (writer) => writer.saveGoal(goal));
   };
   deleteGoal = (id: string) => this.change((data) => ({ ...data, goals: data.goals.filter((goal) => goal.id !== id) }), (writer) => writer.deleteGoal(id));
+  importTransactions = (record: ImportRecord, records: PreparedImportTransaction[]) => {
+    validateImportRecord(record);
+    if (records.length !== record.importedCount) return Promise.reject(new Error('The import reconciliation count does not match the selected rows.'));
+    records.forEach((entry) => validateTransaction(entry.input));
+    return this.change((data) => {
+      const history = data.imports.find((item) => item.id === record.id);
+      if (history?.status === 'completed') return data;
+      if (history && (history.status === 'rolled_back' || history.status === 'partial_rollback')) throw new Error('Start a new import session after a rollback.');
+      const transactions = [...data.transactions];
+      records.forEach((entry) => {
+        const existing = transactions.find((transaction) => transaction.id === entry.id);
+        if (existing) {
+          if (existing.importId === record.id && existing.importOriginalHash === entry.input.importOriginalHash) return;
+          throw new Error('An import transaction ID already belongs to another record.');
+        }
+        transactions.push({ ...entry.input, id: entry.id, createdAt: Date.now() });
+      });
+      const completed: ImportRecord = { ...record, status: 'completed', importedCount: records.length, updatedAt: Date.now() };
+      return { ...data, transactions, imports: [...data.imports.filter((item) => item.id !== record.id), completed] };
+    }, (writer) => writer.importTransactions(record, records));
+  };
+  rollbackImport = async (importId: string): Promise<ImportRollbackResult> => {
+    if (!validRecordId(importId)) throw new Error('The import ID is invalid.');
+    if (this.state.mode === 'demo') {
+      const result: ImportRollbackResult = { deletedCount: 0, conflictCount: 0 };
+      await this.mutateDemo((data) => {
+        const linked = new Set(data.plannedExpenses.flatMap((item) => item.transactionId ? [item.transactionId] : []));
+        const removable = new Set<string>();
+        data.transactions.filter((transaction) => transaction.importId === importId).forEach((transaction) => {
+          const { id: discardedId, createdAt: discardedCreatedAt, ...input } = transaction;
+          void discardedId; void discardedCreatedAt;
+          if (linked.has(transaction.id) || !transaction.importOriginalHash || transactionCoreHash(input) !== transaction.importOriginalHash) {
+            result.conflictCount += 1;
+          } else removable.add(transaction.id);
+        });
+        result.deletedCount = removable.size;
+        const imports = data.imports.map((record) => record.id === importId
+          ? { ...record, status: result.conflictCount ? 'partial_rollback' as const : 'rolled_back' as const, updatedAt: Date.now() } : record);
+        return { ...data, transactions: data.transactions.filter((transaction) => !removable.has(transaction.id)), imports };
+      });
+      return result;
+    }
+    return this.cloudWrite((writer) => writer.rollbackImport(importId));
+  };
+  saveCategoryRule = (rule: CategoryRule) => {
+    validateCategoryRule(rule);
+    return this.change((data) => {
+      const existing = data.categoryRules.find((item) => item.id === rule.id);
+      if (!existing && data.categoryRules.length >= MAX_CATEGORY_RULES) throw new Error(`Keep at most ${MAX_CATEGORY_RULES} reusable categorization rules.`);
+      return { ...data, categoryRules: [...data.categoryRules.filter((item) => item.id !== rule.id), { ...rule, createdAt: existing?.createdAt ?? rule.createdAt }] };
+    }, (writer) => writer.saveCategoryRule(rule));
+  };
+  deleteCategoryRule = (id: string) => this.change((data) => ({ ...data, categoryRules: data.categoryRules.filter((rule) => rule.id !== id) }), (writer) => writer.deleteCategoryRule(id));
   resetDemo = async () => {
     if (this.state.mode !== 'demo') throw new Error('Reset demo is available only in local demo mode.');
     await this.mutateDemo(() => createDemoData()); try { localStorage.removeItem('spendsmart.demo.recovery-backup.v1'); } catch { /* Reset also works in a session-only demo. */ } this.patch({ error: null });

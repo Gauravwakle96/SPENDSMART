@@ -1,5 +1,21 @@
 export type TransactionType = 'expense' | 'income' | 'refund';
 
+export const TRANSACTION_CLASSIFICATIONS = [
+  'expense',
+  'income',
+  'refund',
+  'internal_transfer',
+  'credit_card_payment',
+  'loan_disbursement',
+  'loan_repayment',
+  'investment',
+  'cash_withdrawal',
+  'fee',
+  'unknown',
+] as const;
+
+export type TransactionClassification = (typeof TRANSACTION_CLASSIFICATIONS)[number];
+
 export interface Transaction {
   /** Missing on legacy records; the single supported currency is INR. */
   currency?: 'INR';
@@ -10,6 +26,20 @@ export interface Transaction {
   date: string;
   note: string;
   createdAt: number;
+  /** Optional, explainable classification supplied by the bank-import workflow. */
+  classification?: TransactionClassification;
+  /** True for transfers and uncertain movements that must not affect budgets or income totals. */
+  excludedFromAnalysis?: boolean;
+  /** Import provenance. Original statement files are never persisted. */
+  importId?: string;
+  accountLabel?: string;
+  accountKey?: string;
+  sourceTransactionId?: string;
+  sourceFileHash?: string;
+  sourceRowNumber?: number;
+  sourceFingerprint?: string;
+  importOriginalHash?: string;
+  merchant?: string;
 }
 
 export type TransactionInput = Omit<Transaction, 'id' | 'createdAt'>;
